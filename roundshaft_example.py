@@ -42,7 +42,7 @@ px = CustomDistribution(dim=D, pdf=pdf, sampler=sampler)
 
 for REP in range(REPS):
 
-    if rank % size == REP:
+    if REP % size == rank:
 
         np.random.seed(111 + REP)
         torch.manual_seed(111 + REP)
