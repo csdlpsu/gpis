@@ -10,7 +10,7 @@ class Surrogates():
     def __init__(self, train_x, train_y, bounds):
         self.train_x = train_x
         self.train_y = train_y
-        self.bounds = torch.tensor(bounds.T, dtype=train_y.dtype) # BoTorch expects bounds to be 2xd
+        self.bounds = bounds.T # BoTorch expects bounds to be 2xd
         return
 
     def fit_gp(self):
