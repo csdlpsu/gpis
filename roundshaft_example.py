@@ -42,7 +42,7 @@ px = CustomDistribution(dim=D, pdf=pdf, sampler=sampler)
 
 for REP in range(REPS):
 
-    if REP % size == rank:
+    if rank % size == REP:
 
         np.random.seed(111 + REP)
         torch.manual_seed(111 + REP)
@@ -92,12 +92,12 @@ for REP in range(REPS):
             # fp_, _, _, _ = ISEestimator_(proposals, samples_X, samples_Y, failure_fn)
             fp.append(fp_)
 
-            print(f"REP {REP} Iteration {it}: total training points = {train_X.shape[0]} fp {fp_:1.10f}")
+            print(f"REP {REP} Iteration {it}: total training points = {train_X.shape[0]} fp {fp_:1.10f}", flush=True)
 
-        try:
-            filename = f"results/roundshaft_new/REP_{REP}.npy"
-            np.save(filename, np.array(fp))
-        except FileNotFoundError:
-            directory_name = "results/roundshaft_new"
-            filename = directory_name + "/" + f"REP_{REP}.npy"
-            os.mkdir(directory_name)
+            try:
+                filename = f"results/roundshaft_new/REP_{REP}.npy"
+                np.save(filename, np.array(fp))
+            except FileNotFoundError:
+                directory_name = "results/roundshaft_new"
+                filename = directory_name + "/" + f"REP_{REP}.npy"
+                os.mkdir(directory_name)

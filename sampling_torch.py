@@ -364,7 +364,7 @@ def get_kde_weights(gp, px, pilot_X, bounds, threshold, alpha=1.0):
         mu = post.mean.squeeze()
         sigma = post.variance.sqrt().squeeze()
     pi_vals_ = (1.0 - torch.distributions.Normal(mu, sigma).cdf(torch.tensor(threshold))).clamp(1e-12, 1.0)
-    eta = min(1., 5. / np.sqrt(train_X.shape[0]))
+    eta = min(1., .3 / np.sqrt(train_X.shape[0]))
     pi_vals = (1. - eta) * (pi_vals_ ** alpha) + eta * px.pdf(pilot_X)
 
     # Compute weights and sample new points via KDE
