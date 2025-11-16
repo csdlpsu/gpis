@@ -8,7 +8,7 @@ from typing import Optional, Callable
 import torch
 from torch import Tensor
 from kde_test import GaussianKDE
-from mis_estimator import MISEstimator, MISEestimator_
+from mis_estimator import MISEstimator, MISEestimator_, ISEestimator_
 import os
 from mpi4py import MPI
 
@@ -33,6 +33,7 @@ num_iters = 80          # number of sequential updates
 alpha     = 0.97        # exponent in q_n(x) ∝ p(x) * π^α
 h         = 0.2         # bandwidth for Gaussian kernel in KDE
 REPS      = 10
+estimator = "is"
 # Construct input distribution p(x)
 
 # Uniform distribution
@@ -72,7 +73,7 @@ px = CustomDistribution(dim=D, pdf=pdf_unif, sampler=sampler)
 
 for REP in range(REPS):
 
-    if rank % size == REP:
+    if REP % size == rank:
 
         np.random.seed(111 + REP)
         torch.manual_seed(111 + REP)
@@ -118,15 +119,18 @@ for REP in range(REPS):
             proposals.append(qx)
             def failure_fn(X: torch.Tensor) -> torch.Tensor:
                 return (X.view(-1) > t)
-            fp_, _, _, _ = MISEestimator_(proposals, samples_X, samples_Y, failure_fn)
+            if estimator.lower() == "mis":
+                fp_, _, _, _ = MISEestimator_(proposals, samples_X, samples_Y, failure_fn)
+            elif estimator.lower() == "is":
+                fp_, _, _, _ = ISEestimator_(proposals, samples_X, samples_Y, failure_fn)
             fp.append(fp_)
 
             print(f"REP {REP} Iteration {it}: total training points = {train_X.shape[0]} fp {fp_}", flush=True)
 
             try:
-                filename = f"results/herbie_v2/REP_{REP}.npy"
+                filename = f"results/herbie_is/REP_{REP}.npy"
                 np.save(filename, np.array(fp))
             except FileNotFoundError:
-                directory_name = "results/herbie_v2"
+                directory_name = "results/herbie_is"
                 filename = directory_name + "/" + f"REP_{REP}.npy"
                 os.mkdir(directory_name)

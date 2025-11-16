@@ -28,7 +28,7 @@ t         = 1.
 m         = int(10_000 * D) # number of pilot samples for KDE
 q         = 5               # batch size per iteration
 n_init    = 5
-num_iters = 200          # number of sequential updates
+num_iters = 1000          # number of sequential updates
 # KDE parameters
 alpha     = 0.97         # exponent in q_n(x) ∝ p(x) * π^α
 h         = 0.2         # bandwidth for Gaussian kernel in KDE
