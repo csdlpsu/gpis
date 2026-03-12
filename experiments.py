@@ -133,8 +133,8 @@ for REP in range(REPS):
             weights = get_kde_weights(gp, px, pilot_X, train_X, bounds, t, alpha=0.9)
             list_of_weights.append(weights)
         
-            new_X, qx = fit_and_sample_kde(pilot_X, weights, q=q)        
-            new_X = clip_to_bounds(new_X.double(), bounds.double())        
+            new_X, qx = fit_and_sample_kde(pilot_X, weights, q=500) # 500 choose a large number, but keep the first q
+            new_X = clip_to_bounds(new_X.double(), bounds.double())[:q, ...]        
             new_Y = func_(new_X).reshape(-1, 1)
                         
             # Update training data
