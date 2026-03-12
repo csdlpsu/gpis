@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Optional, Union
-
+from scipy.stats import gaussian_kde
 
 class GaussianKDE:
     """
@@ -157,3 +157,23 @@ class GaussianKDE:
         base = self.X[idx]
         z = rng.normal(size=(n, self.d)) @ self.L.T
         return base + z
+
+
+class GaussianKDE_():
+
+    def __init__(self, X,  bw_method="silverman", weights=None):
+
+        self.X = X.T
+        self.bw_method = bw_method
+        self.weights = weights / weights.sum()
+        self.kde = gaussian_kde(self.X.numpy(), bw_method=self.bw_method, weights=self.weights.numpy())
+        return
+
+    def pdf(self, X):
+        return self.kde.pdf(X.T)
+
+    def logpdf(self, X):
+        return self.kde.logpdf(X.T)
+
+    def sample(self, n):
+        return self.kde.resample(n).T

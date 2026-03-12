@@ -300,10 +300,9 @@ class MixtureOfGaussians(CustomDistribution):
 
         super().__init__(dim=d, logpdf=mix_logpdf, normalized=True, sampler=sampler)
 
-# ---------- Examples ----------
-
-if __name__ == "__main__":
-    rng = np.random.default_rng(0)
+# ---------- Example usage ----------
+r"""
+rng = np.random.default_rng(0)
 
     # 1) User-defined normalized pdf in 1D (bimodal, normalized by hand)
     def pdf_1d(x):
@@ -345,3 +344,4 @@ if __name__ == "__main__":
     print("pdf([0,0]):", p3.pdf([0.0, 0.0]))
     s3 = p3.sample(500, rng=rng)
     print("mixture samples shape:", s3.shape)
+"""

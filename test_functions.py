@@ -6,12 +6,24 @@ from typing import Optional, Callable, Tuple
 
 class TestFunctions():
 
-    def __init__(self, negate=False):
+    def __init__(self, functionname, negate=False):
         # general attributes
         self.negate = negate
-        # self.herbie_bounds = torch.tensor([[-2.0, 2.0], [-2.0, 2.0]])
-        # self.herbie_dim = 2
 
+        if functionname.lower() == "roundshaft":
+            self.func = RoundShaftBT()
+            self.func_= RoundShaftBT().eval 
+        elif functionname.lower() == "cantilever":
+            self.func = CantileverBeam()
+            self.func_= CantileverBeam().eval
+        elif functionname.lower() == "herbie":
+            self.func = Herbie()
+            self.func_= Herbie().eval             
+        elif functionname.lower() == "fourbranch":
+            self.func = FourBranch()
+            self.func_= FourBranch().eval 
+        else:
+            raise NotImplementedError("Entered function name is not implemented")
         return
 
 class Herbie():
@@ -50,7 +62,7 @@ class Herbie():
         return -self.herbie_g(X, threshold=threshold)
 
     @staticmethod
-    def sampler_p_herbie(n: int) -> torch.Tensor:
+    def sampler(n: int) -> torch.Tensor:
         """
         Proposal / input distribution p(x): standard normal N(0, I) in 2D,
         mirroring your four-branch setup.
@@ -63,6 +75,9 @@ class Herbie():
         Log-density of N(0, I) in 2D.
         """
         return -0.5 * torch.sum(X * X, dim=1) - math.log(2.0 * math.pi)
+
+    def pdf(self, X: torch.Tensor) -> torch.Tensor:
+        return torch.exp(self.logpdf_p_herbie(X))        
 
 class FourBranch():
     def __init__(self, negate=False, dtype=torch.double):
@@ -83,13 +98,16 @@ class FourBranch():
     def f_eval(self, X: torch.Tensor) -> torch.Tensor:
         return -self.four_branch_g(X)  # failure if f>0
 
-    def sampler_p_fb(n: int) -> torch.Tensor:
+    def sampler(n: int) -> torch.Tensor:
         return torch.randn(n, 2, dtype=torch.double, device=device)
 
     def logpdf_p_fb(X: torch.Tensor) -> torch.Tensor:
         # standard normal N(0,I) in 2D
         return -0.5 * torch.sum(X * X, dim=1) - math.log(2 * math.pi)
-
+    
+    def pdf(self, X: torch.Tensor) -> torch.Tensor:
+        return torch.exp(self.logpdf_p_fb(X))
+        
 class CantileverBeam():
     def __init__(self, negate=False, dtype=torch.double):
         self.negate = negate
@@ -110,7 +128,7 @@ class CantileverBeam():
         m = math.log(mean) - 0.5 * s2
         return m, math.sqrt(s2)
 
-    def sampler_p_cantilever(self, n: int, generator: Optional[torch.Generator]) -> torch.Tensor:
+    def sampler(self, n: int, generator: Optional[torch.Generator]) -> torch.Tensor:
         device = "cpu"
 
         # order: [P, L, E, t]
@@ -134,7 +152,7 @@ class CantileverBeam():
         lt = torch.where((t >= 0.10) & (t <= 0.20), torch.full_like(t, -math.log(0.10)), torch.full_like(t, -1e12))
         return lp + lL + lE + lt
 
-    def pdf_p_cantilever(self, X: torch.Tensor) -> torch.Tensor:
+    def pdf(self, X: torch.Tensor) -> torch.Tensor:
 
         return torch.exp(self.logpdf_p_cantilever(X))
 
@@ -161,7 +179,7 @@ class WeldedBeam():
         self.sigma_max = 30000.0
         self.delta_max = 0.25
 
-    def sampler_p_wb(self, n: int, generator: Optional[torch.Generator]) -> torch.Tensor:
+    def sampler(self, n: int, generator: Optional[torch.Generator]) -> torch.Tensor:
         U = torch.rand(n, 4, dtype=torch.double, device=device)
         return self.WB_lb + (self.WB_ub - self.WB_lb) * U
 
@@ -172,6 +190,9 @@ class WeldedBeam():
         return torch.where(inside, torch.full((X.shape[0],), logc, dtype=torch.double, device=device),
                            torch.full((X.shape[0],), -1e12, dtype=torch.double, device=device))
 
+    def pdf(self, X: torch.Tensor) -> torch.Tensor:
+        return torch.exp(self.logpdf_p_wb(X))
+        
     def welded_beam_components(self, X: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         h, l, t, b = X[:, 0], X[:, 1], X[:, 2], X[:, 3]
 
@@ -252,7 +273,7 @@ class RoundShaftBT():
         return torch.where(in_support, lp, torch.full_like(x, -1e12))
 
     # ---------- Base measure p ----------
-    def sampler_p_shaft(self, n: int, generator: Optional[torch.Generator] = None) -> torch.Tensor:
+    def sampler(self, n: int, generator: Optional[torch.Generator] = None) -> torch.Tensor:
         device = "cpu"
 
         # Order: [M, T, d, sigma_y, G]
@@ -342,7 +363,7 @@ class RoundShaftBT():
 
         return lM + lT + ld + lsigy + lG
 
-    def pdf_p_shaft(self, X: torch.Tensor) -> torch.Tensor:
+    def pdf(self, X: torch.Tensor) -> torch.Tensor:
         return torch.exp(self.logpdf_p_shaft(X))
 
     # ---------- Limit-state evaluation ----------

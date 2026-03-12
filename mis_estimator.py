@@ -26,6 +26,7 @@ import math
 
 import torch
 from torch import Tensor
+from botorch.utils.transforms import normalize
 
 # Optional: wrap your numpy KDE (from kde_test import GaussianKDE) for convenience.
 try:
@@ -366,6 +367,435 @@ def MISEestimator_(proposals, samples_X, samples_Y, failure_fn):
 
     return fpmis, indicators, num, den
 
+def MISEestimatorMF(gp, proposals, samples_X, samples_Y, failure_fn, bounds, MC_size=100_000, clip_to_bounds=None):
+    r"""
+    proposals -- list of n+1 densities where the first one is the nominal p(x). Each should expose a logpdf method
+    samples -- Batches of points sampled from each density. A list of arrays
+    failure_fn -- a callable that evaluates failure on a vector Y
+    """
+    n_proposals = len(proposals)
+    nbatch = [(samples_Y[i].squeeze()).shape[0] for i in range(len(samples_Y))]
+    prop_weights = torch.tensor(nbatch) / sum(nbatch)
+    indicators_hf = failure_fn(torch.concat(samples_Y))
+    # indicators_lf = failure_fn( gp.posterior(normalize(torch.concat(samples_X), bounds)).mean.detach() )
+    indicators_lf = failure_fn( gp.posterior(torch.concat(samples_X)).mean.detach() )
+    num = []
+    den = []
+
+    px = proposals[0]  # nominal
+    for i in range(len(proposals)):
+        num.append(torch.exp(px.logpdf(samples_X[i])))
+        den.append(prop_weights[i] * np.exp(proposals[i].logpdf(samples_X[i])))
+    fpmis = torch.mean( ((indicators_hf * 1) - (indicators_lf * 1)) * torch.concat(num) / torch.concat(den).sum())
+
+    if clip_to_bounds is not None:
+        X = clip_to_bounds(px.sample(MC_size).double(), bounds.double())  
+    else:
+        X = px.sample(MC_size)
+    # Y = gp.posterior(normalize(X, bounds)).mean.detach()
+    Y = gp.posterior(X).mean.detach()
+    fpmc = torch.mean(failure_fn(Y) * 1.)
+
+    return fpmc + fpmis
+
+def MFEestimator_(proposals, samples_X, samples_Y, failure_fn, gp_model=None):
+    r"""
+    Multifidelity deterministic-mixture MIS estimator.
+
+    proposals  -- list of m densities [p, q1, ..., q_{m-1}] with a logpdf(X) method.
+                 (To use multifidelity term0, each proposal must also be samplable;
+                 see _draw() below for supported method names.)
+    samples_X  -- list of tensors; HF inputs drawn from each proposal i (ONLY HF inputs).
+                 Must satisfy samples_X[i].shape[0] == samples_Y[i].shape[0].
+    samples_Y  -- list of tensors; HF outputs corresponding to samples_X[i].
+    failure_fn -- callable mapping outputs Y -> indicator (bool/0-1) per row.
+    gp_model   -- optional surrogate/GP model used to predict outputs at X.
+
+    Returns:
+      pf_est, indicators_true, num, den
+
+      indicators_true : failure_fn applied to concatenated HF outputs
+      num             : list of p(x) evaluated at HF X batches (vectors)
+      den             : list of q_mix(x) evaluated at HF X batches (vectors)
+    """
+
+    # ----------------------------
+    # Small helpers (robustness)
+    # ----------------------------
+    def _to_torch(a, like):
+        if isinstance(a, torch.Tensor):
+            return a.to(device=like.device, dtype=like.dtype)
+        return torch.as_tensor(a, device=like.device, dtype=like.dtype)
+
+    def _logpdf(prop, X):
+        return _to_torch(prop.logpdf(X), X).reshape(-1)
+
+    def _mix_pdf(X, prop_weights):
+        # q_mix(x) = sum_j alpha_j q_j(x)
+        mix = torch.zeros(X.shape[0], device=X.device, dtype=X.dtype)
+        for j in range(len(proposals)):
+            mix = mix + prop_weights[j] * torch.exp(_logpdf(proposals[j], X))
+        return torch.clamp(mix, min=1e-32)
+
+    def _gp_predict(gp, X):
+        with torch.no_grad():
+            if hasattr(gp, "predict"):
+                y = gp.predict(X)
+            else:
+                y = gp(X)
+                # gpytorch-like: output may have .mean
+                if hasattr(y, "mean"):
+                    y = y.mean
+                # some models return (mean, var) or similar
+                if isinstance(y, (tuple, list)):
+                    y = y[0]
+            return _to_torch(y, X)
+
+    def _draw(prop, n, ref_X):
+        # Try a few common sampler APIs.
+        # - torch.distributions: sample((n,)) or rsample((n,))
+        # - scipy.stats: rvs(size=n)
+        # - scipy.stats.gaussian_kde: resample(n) -> (d, n)
+        x = None
+        if hasattr(prop, "rsample"):
+            try:
+                x = prop.rsample((n,))
+            except Exception:
+                pass
+        if x is None and hasattr(prop, "sample"):
+            try:
+                x = prop.sample((n,))
+            except Exception:
+                try:
+                    x = prop.sample(n)
+                except Exception:
+                    pass
+        if x is None and hasattr(prop, "rvs"):
+            try:
+                x = prop.rvs(size=n)
+            except Exception:
+                pass
+        if x is None and hasattr(prop, "resample"):
+            try:
+                x = prop.resample(n)
+                # gaussian_kde returns (d, n)
+                if hasattr(x, "T"):
+                    x = x.T
+            except Exception:
+                pass
+        if x is None:
+            raise TypeError(
+                "Cannot draw surrogate samples: proposal has no supported sampler "
+                "(rsample/sample/rvs/resample)."
+            )
+
+        x = _to_torch(x, ref_X)
+        # Ensure (n, d) shape if HF X is 2D
+        if ref_X.ndim == 2 and x.ndim == 1:
+            x = x.unsqueeze(-1)
+        return x
+
+    # ----------------------------
+    # HF bookkeeping / weights
+    # ----------------------------
+    m = len(proposals)
+    assert len(samples_X) == m, "samples_X must match proposals length"
+    assert len(samples_Y) == m, "samples_Y must match proposals length"
+
+    # Make sure HF X and Y align 1:1 (as per your new requirement)
+    for i in range(m):
+        if samples_X[i].shape[0] != samples_Y[i].squeeze().shape[0]:
+            raise ValueError(
+                f"HF alignment mismatch at i={i}: "
+                f"samples_X has {samples_X[i].shape[0]} rows but samples_Y has {samples_Y[i].squeeze().shape[0]}."
+            )
+
+    nbatch_hf = [samples_X[i].shape[0] for i in range(m)]
+    N_hf = int(sum(nbatch_hf))
+    if N_hf <= 0:
+        raise ValueError("Need at least one HF sample.")
+
+    prop_weights_hf = torch.tensor(nbatch_hf, dtype=torch.get_default_dtype())
+    prop_weights_hf = prop_weights_hf / prop_weights_hf.sum()
+
+    px = proposals[0]  # nominal density p(x)
+
+    # True indicators on HF outputs
+    Y_hf_all = torch.concat(samples_Y, dim=0)
+    indicators_true = failure_fn(Y_hf_all).to(torch.get_default_dtype()).reshape(-1)
+
+    # MIS weights on HF inputs
+    num, den = [], []
+    for i in range(m):
+        Xi = samples_X[i]
+        pi = torch.exp(_logpdf(px, Xi))
+        qmix_i = _mix_pdf(Xi, prop_weights_hf)
+        num.append(pi)
+        den.append(qmix_i)
+
+    w_hf = torch.concat(num, dim=0) / torch.concat(den, dim=0)
+    pf_hf_mis = torch.mean(indicators_true * w_hf)
+
+    # If no GP given, just return standard HF MIS
+    if gp_model is None:
+        return pf_hf_mis, indicators_true, num, den
+
+    # ----------------------------
+    # Term 0: surrogate MIS (large, internal sampling)
+    # ----------------------------
+    # Controls how many *surrogate-only* points you draw relative to HF.
+    # Increase this to reduce MC noise in term0 (subject to compute/memory).
+    SURROGATE_MULT = 100
+
+    # Stream in chunks to avoid huge concatenations if N is large.
+    CHUNK_SIZE = 50_000
+
+    # Since we scale all nbatch by a constant integer, the mixture weights match prop_weights_hf exactly.
+    term0_sum = torch.zeros((), device=samples_X[0].device, dtype=samples_X[0].dtype)
+    N_surr_total = 0
+
+    for i in range(m):
+        n_i = int(SURROGATE_MULT * nbatch_hf[i])
+        if n_i <= 0:
+            continue
+        N_surr_total += n_i
+
+        for start in range(0, n_i, CHUNK_SIZE):
+            n_chunk = min(CHUNK_SIZE, n_i - start)
+            Xs = _draw(proposals[i], n_chunk, ref_X=samples_X[i])
+
+            Yhat = _gp_predict(gp_model, Xs)
+            ind_hat = failure_fn(Yhat).to(Xs.dtype).reshape(-1)
+
+            ps = torch.exp(_logpdf(px, Xs))
+            qmix_s = _mix_pdf(Xs, prop_weights_hf)
+            ws = ps / qmix_s
+
+            term0_sum = term0_sum + torch.sum(ind_hat * ws)
+
+    if N_surr_total <= 0:
+        raise ValueError("Internal surrogate sampling produced zero samples; check HF batches and SURROGATE_MULT.")
+    term0 = term0_sum / N_surr_total
+
+    # ----------------------------
+    # Term 1: HF correction MIS
+    # ----------------------------
+    X_hf_all = torch.concat(samples_X, dim=0)
+    Yhat_hf = _gp_predict(gp_model, X_hf_all)
+    indicators_hat_hf = failure_fn(Yhat_hf).to(X_hf_all.dtype).reshape(-1)
+
+    delta = indicators_true - indicators_hat_hf
+    term1 = torch.mean(delta * w_hf)
+
+    fpmf = term0 + term1
+    return fpmf, indicators_true, num, den
+
+
+def MFEestimator2_(proposals, samples_X, samples_Y, failure_fn, gp_model=None):
+    r"""
+    Fast multifidelity stratified-IS estimator.
+
+    Key change vs deterministic-mixture MIS:
+      - For surrogate term0 (and correction term1), uses per-proposal IS weights p(x)/q_i(x)
+        instead of mixture weights p(x)/sum_j alpha_j q_j(x).
+      - This avoids O(m) logpdf calls per sample and is typically 10-100x faster.
+
+    proposals  -- list of m densities [p, q1, ..., q_{m-1}], each exposing:
+                  - logpdf(X)
+                  - a sampling method for internal surrogate sampling (see _draw()).
+    samples_X  -- list of tensors; HF inputs only from each proposal i.
+    samples_Y  -- list of tensors; HF outputs aligned 1:1 with samples_X[i].
+    failure_fn -- callable mapping outputs Y -> indicator per row (bool/0-1)
+    gp_model   -- optional surrogate (your Surrogates/BoTorch GP object)
+
+    Returns:
+      pf_est, indicators_true, num, den
+      - num: list of p(x) evaluated at HF X batches
+      - den: list of q_i(x) evaluated at HF X batches  (NOTE: not mixture denominator)
+    """
+
+    # ----------------------------
+    # Internal constants
+    # ----------------------------
+    SURROGATE_MULT = 50      # reduce/increase depending on speed/variance tradeoff
+    CHUNK_SIZE = 50_000
+    EPS = 1e-32
+
+    m = len(proposals)
+    assert len(samples_X) == m and len(samples_Y) == m, "samples_X/samples_Y must match proposals length"
+
+    # ----------------------------
+    # Helpers
+    # ----------------------------
+    def _to_torch(a, like):
+        if isinstance(a, torch.Tensor):
+            return a.to(device=like.device, dtype=like.dtype)
+        return torch.as_tensor(a, device=like.device, dtype=like.dtype)
+
+    def _logpdf(prop, X):
+        return _to_torch(prop.logpdf(X), X).reshape(-1)
+
+    def _draw(prop, n, ref_X):
+        # Supported sampler APIs: rsample / sample / rvs / resample
+        x = None
+        if hasattr(prop, "rsample"):
+            try:
+                x = prop.rsample((n,))
+            except Exception:
+                pass
+        if x is None and hasattr(prop, "sample"):
+            try:
+                x = prop.sample((n,))
+            except Exception:
+                try:
+                    x = prop.sample(n)
+                except Exception:
+                    pass
+        if x is None and hasattr(prop, "rvs"):
+            try:
+                x = prop.rvs(size=n)
+            except Exception:
+                pass
+        if x is None and hasattr(prop, "resample"):
+            try:
+                x = prop.resample(n)
+                if hasattr(x, "T"):
+                    x = x.T  # e.g. scipy gaussian_kde returns (d, n)
+            except Exception:
+                pass
+        if x is None:
+            raise TypeError(
+                "Cannot draw surrogate samples: each proposal must support rsample/sample/rvs/resample."
+            )
+
+        x = _to_torch(x, ref_X)
+        if ref_X.ndim == 2 and x.ndim == 1:
+            x = x.unsqueeze(-1)
+        return x
+
+    def _gp_predict(model, X):
+        # Works with BoTorch/GPyTorch GP: gp(X) -> posterior with .mean
+        with torch.no_grad():
+            model.eval()
+            out = model(X)
+            if hasattr(out, "mean"):
+                return out.mean
+            if isinstance(out, (tuple, list)):
+                return out[0]
+            return out
+
+    # ----------------------------
+    # HF alignment check
+    # ----------------------------
+    for i in range(m):
+        nx = samples_X[i].shape[0]
+        ny = samples_Y[i].squeeze().shape[0]
+        if nx != ny:
+            raise ValueError(f"HF alignment mismatch at i={i}: samples_X has {nx}, samples_Y has {ny}.")
+
+    nbatch_hf = [samples_X[i].shape[0] for i in range(m)]
+    N_hf = int(sum(nbatch_hf))
+    if N_hf <= 0:
+        raise ValueError("Need at least one HF sample.")
+
+    px = proposals[0]
+
+    # ----------------------------
+    # HF true indicator
+    # ----------------------------
+    Y_hf_all = torch.concat(samples_Y, dim=0)
+    indicators_true = failure_fn(Y_hf_all).to(torch.get_default_dtype()).reshape(-1)
+
+    # If no GP, return stratified IS on HF only (fast, unbiased)
+    # (This replaces your previous deterministic-mixture MIS with a faster unbiased variant.)
+    # Weight for HF point from proposal i is p/q_i.
+    num, den = [], []
+    hf_sum = torch.zeros((), device=samples_X[0].device, dtype=samples_X[0].dtype)
+    offset = 0
+    for i in range(m):
+        Xi = samples_X[i]
+        ni = Xi.shape[0]
+        if ni == 0:
+            num.append(torch.empty((0,), device=Xi.device, dtype=Xi.dtype))
+            den.append(torch.empty((0,), device=Xi.device, dtype=Xi.dtype))
+            continue
+
+        logp = _logpdf(px, Xi)
+        logqi = _logpdf(proposals[i], Xi)
+        pi = torch.exp(logp)
+        qi = torch.exp(logqi).clamp_min(EPS)
+
+        num.append(pi)
+        den.append(qi)
+
+        ind_i = indicators_true[offset:offset + ni].to(Xi.dtype)
+        wi = pi / qi
+        hf_sum = hf_sum + torch.sum(ind_i * wi)
+        offset += ni
+
+    pf_hf = hf_sum / N_hf
+
+    if gp_model is None:
+        return pf_hf, indicators_true, num, den
+
+    # ----------------------------
+    # Term 0: surrogate estimate of E_p[ I_hat ] via internal stratified IS
+    # ----------------------------
+    term0_sum = torch.zeros((), device=samples_X[0].device, dtype=samples_X[0].dtype)
+    N_surr_total = 0
+
+    for i in range(m):
+        n_i = int(SURROGATE_MULT * nbatch_hf[i])
+        if n_i <= 0:
+            continue
+        N_surr_total += n_i
+
+        for start in range(0, n_i, CHUNK_SIZE):
+            n_chunk = min(CHUNK_SIZE, n_i - start)
+            Xs = _draw(proposals[i], n_chunk, ref_X=samples_X[i])
+
+            Yhat = _gp_predict(gp_model, Xs)
+            ind_hat = failure_fn(Yhat).to(Xs.dtype).reshape(-1)
+
+            logp = _logpdf(px, Xs)
+            logqi = _logpdf(proposals[i], Xs)
+            ws = torch.exp(logp - logqi).clamp_max(1e32)  # optional safety
+
+            term0_sum = term0_sum + torch.sum(ind_hat * ws)
+
+    if N_surr_total <= 0:
+        raise ValueError("Internal surrogate sampling produced zero samples.")
+    term0 = term0_sum / N_surr_total
+
+    # ----------------------------
+    # Term 1: HF correction E_p[ I - I_hat ] using the SAME HF points (stratified IS)
+    # ----------------------------
+    X_hf_all = torch.concat(samples_X, dim=0)
+    Yhat_hf = _gp_predict(gp_model, X_hf_all)
+    indicators_hat_hf = failure_fn(Yhat_hf).to(X_hf_all.dtype).reshape(-1)
+
+    delta = indicators_true.to(X_hf_all.dtype) - indicators_hat_hf
+
+    # We already accumulated p/q_i weights by strata for HF in pf_hf computation; reuse them efficiently:
+    term1_sum = torch.zeros((), device=X_hf_all.device, dtype=X_hf_all.dtype)
+    offset = 0
+    for i in range(m):
+        Xi = samples_X[i]
+        ni = Xi.shape[0]
+        if ni == 0:
+            continue
+
+        # reuse num/den already computed for HF strata
+        wi = (num[i] / den[i]).to(Xi.dtype)
+        di = delta[offset:offset + ni].to(Xi.dtype)
+        term1_sum = term1_sum + torch.sum(di * wi)
+        offset += ni
+
+    term1 = term1_sum / N_hf
+
+    fpmf = term0 + term1
+    return fpmf, indicators_true, num, den
+    
 def ISEestimator_(proposals, samples_X, samples_Y, failure_fn):
     r"""
     proposals -- list of n+1 densities where the first one is the nominal p(x). Each should expose a logpdf method
@@ -373,7 +803,7 @@ def ISEestimator_(proposals, samples_X, samples_Y, failure_fn):
     failure_fn -- a callable that evaluates failure on a vector Y
     """
     n_proposals = len(proposals)
-    nbatch = [ i for i in range(n_proposals)]
+    nbatch = [ 0 for i in range(n_proposals)]
     nbatch.append(1)
     prop_weights = torch.tensor(nbatch) / sum(nbatch)
     indicators = failure_fn(torch.concat(samples_Y))
@@ -382,11 +812,14 @@ def ISEestimator_(proposals, samples_X, samples_Y, failure_fn):
     den = []
 
     px = proposals[0]  # nominal
-    for i in range(len(proposals)):
-        num.append(torch.exp(px.logpdf(samples_X[i])))
-        den.append(prop_weights[i] * np.exp(proposals[i].logpdf(samples_X[i])))
-    fpmis = torch.mean((indicators * 1) * torch.concat(num) / torch.concat(den).sum())
-
+    # for i in range(len(proposals)):
+    #     num.append(torch.exp(px.logpdf(samples_X[i])))
+    #     den.append(prop_weights[i] * np.exp(proposals[i].logpdf(samples_X[i])))
+    num.append(torch.exp(px.logpdf(samples_X[-1])))
+    den.append( torch.tensor( np.exp(proposals[-1].logpdf(samples_X[-1]))) )
+    # fpmis = torch.mean((indicators * 1) * torch.concat(num) / torch.concat(den).sum())
+    # fpmis = torch.mean(torch.concat(num) / torch.concat(den).sum())  # debug
+    fpmis = torch.mean(torch.concat(num) / torch.concat(den).sum())  # debug
     return fpmis, indicators, num, den
 
 def MCEestimator_(proposals, samples_X, samples_Y, failure_fn):
@@ -408,7 +841,8 @@ def MCEestimator_(proposals, samples_X, samples_Y, failure_fn):
     for i in range(len(proposals)):
         num.append(torch.exp(px.logpdf(samples_X[i])))
         den.append(prop_weights[i] * np.exp(proposals[i].logpdf(samples_X[i])))
-    fpmis = torch.mean((indicators * 1) * torch.concat(num) / torch.concat(den).sum())
+    # fpmis = torch.mean((indicators * 1) * torch.concat(num) / torch.concat(den).sum())
+    fpmis = torch.mean( torch.concat(num) / torch.concat(den).sum()) # debug
 
     return fpmis, indicators, num, den
 # ------------------------------

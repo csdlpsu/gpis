@@ -3,9 +3,9 @@ from typing import Callable, Optional, Tuple, Union
 import numpy as np
 import torch
 from torch import Tensor
-from kde_test import GaussianKDE
+from kde_test import GaussianKDE, GaussianKDE_
 from botorch.utils.transforms import normalize
-
+from scipy.stats import gaussian_kde
 TensorLike = Union[Tensor, float]
 
 # =========================
@@ -356,28 +356,38 @@ def fit_and_sample_kde(pilot_X, weights, q=1):
     return torch.tensor(kde.sample(q), dtype=torch.double), kde
 
 
-def get_kde_weights(gp, px, pilot_X, bounds, threshold, alpha=1.0):
-    train_X = gp.train_inputs[0]
+def get_kde_weights(gp, px, pilot_X, train_X, bounds, threshold, alpha=1.0, normaliz=True):
     # Compute posterior failure prob π_n on pilot set
     with torch.no_grad():
-        post = gp.posterior(normalize(pilot_X, bounds.T))
-        mu = post.mean.squeeze()
+        # post = gp.posterior(normalize(pilot_X, bounds))
+        post  = gp.posterior( pilot_X.double() )
+        mu    = post.mean.squeeze()
         sigma = post.variance.sqrt().squeeze()
     pi_vals_ = (1.0 - torch.distributions.Normal(mu, sigma).cdf(torch.tensor(threshold))).clamp(1e-12, 1.0)
     eta = min(1., .3 / np.sqrt(train_X.shape[0]))
     pi_vals = (1. - eta) * (pi_vals_ ** alpha) + eta * px.pdf(pilot_X)
-
+    
     # Compute weights and sample new points via KDE
     weights = pi_vals
-    weights /= weights.sum()
-    return weights
+    if normaliz:
+        return weights / weights.sum()
+    else:
+        return weights
 
 def fit_and_sample_kde_(pilot_X, weights, q=1, *, train_X=None):
-    kde = GaussianKDE(pilot_X, weights=weights, bandwidth="scott")
+    kde = GaussianKDE(pilot_X, weights=weights, bandwidth="silverman")
     samples = torch.tensor(kde.sample(100 * q), dtype=torch.double)
     if train_X is None:
         return samples[:q], kde
     return maximin(samples, train_X, q), kde
+
+def fit_and_sample_kde_scipy(pilot_X, weights, q=1, *, train_X=None):
+    # kde = GaussianKDE(pilot_X, weights=weights, bandwidth="silverman")
+    kde = GaussianKDE_(pilot_X, bw_method="silverman", weights=weights)
+    samples = torch.tensor(kde.sample(100 * q), dtype=torch.double)
+    if train_X is None:
+        return samples[:q], kde
+    return samples[:q], kde # maximin(samples, train_X, q), kde
 
 def maximin(samples, train_X, q):
     samples = samples.detach().cpu().double()
