@@ -152,7 +152,7 @@ for REP in range(REPS):
                 fp_, _, _, _ = ISEestimator_(proposals, samples_X, samples_Y, failure_fn)
             elif estimator.lower() == "mfmis":
                 fp_ = MISEestimatorMF(gp, proposals, samples_X, samples_Y, failure_fn, bounds, 
-                                      MC_size=5_00_000, clip_to_bounds=clip_to_bounds)
+                                      MC_size=2_00_000, clip_to_bounds=clip_to_bounds)
             fp.append(fp_)
         
             print(f"REP {REP} Iteration {it}: total training points = {train_X.shape[0]} fp {fp_}", flush=True)
