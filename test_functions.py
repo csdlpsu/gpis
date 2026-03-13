@@ -33,6 +33,7 @@ class Herbie():
         self.dtype  = dtype
         self.dim    = 2
         self.bounds = torch.tensor([[-2.0, 2.0], [-2.0, 2.0]], dtype=dtype)
+        
     def eval(self, X: torch.Tensor) -> torch.Tensor:
         """
         Torch version of the provided numpy herbie_2d.
@@ -61,16 +62,16 @@ class Herbie():
         """
         return -self.herbie_g(X, threshold=threshold)
 
-    @staticmethod
-    def sampler(n: int) -> torch.Tensor:
+    
+    def sampler(self, n: int, generator: Optional[torch.Generator]) -> torch.Tensor:
         """
         Proposal / input distribution p(x): standard normal N(0, I) in 2D,
         mirroring your four-branch setup.
         """
         return torch.randn(n, 2, dtype=torch.double, device=device)
 
-    @staticmethod
-    def logpdf_p_herbie(X: torch.Tensor) -> torch.Tensor:
+    
+    def logpdf_p_herbie(self, X: torch.Tensor) -> torch.Tensor:
         """
         Log-density of N(0, I) in 2D.
         """
@@ -98,10 +99,10 @@ class FourBranch():
     def f_eval(self, X: torch.Tensor) -> torch.Tensor:
         return -self.four_branch_g(X)  # failure if f>0
 
-    def sampler(n: int) -> torch.Tensor:
+    def sampler(self, n: int, generator: Optional[torch.Generator]) -> torch.Tensor:
         return torch.randn(n, 2, dtype=torch.double, device=device)
 
-    def logpdf_p_fb(X: torch.Tensor) -> torch.Tensor:
+    def logpdf_p_fb(self, X: torch.Tensor) -> torch.Tensor:
         # standard normal N(0,I) in 2D
         return -0.5 * torch.sum(X * X, dim=1) - math.log(2 * math.pi)
     
