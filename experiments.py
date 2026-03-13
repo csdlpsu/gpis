@@ -29,6 +29,7 @@ from mpi4py import MPI
 import argparse
 from botorch.utils.transforms import unnormalize, normalize
 
+torch.set_num_threads(int(os.environ.get("SLURM_CPUS_PER_TASK", "1")))
 
 if torch.cuda.is_available():
     device = torch.device("cuda")
