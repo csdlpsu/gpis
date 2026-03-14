@@ -106,6 +106,9 @@ def clip_to_bounds(X, bounds):
 def failure_fn(X: torch.Tensor) -> torch.Tensor:
     return (X.view(-1) > t)
 
+outdir = os.path.join("results", args.wd)
+os.makedirs(outdir, exist_ok=True)
+
 for REP in range(REPS):
 
     if REP % size == rank:
@@ -114,10 +117,10 @@ for REP in range(REPS):
         torch.manual_seed(111 + REP)
         
         # Generate pilot samples for KDE (uniform p(x))
-        pilot_X = clip_to_bounds(px.sample(m).double(), bounds.double())
+        pilot_X = clip_to_bounds(px.sample(m * 100).double(), bounds.double())[:m, ...]
         
         # Initial training design
-        train_X = clip_to_bounds(px.sample(n_init).double(), bounds.double())
+        train_X = clip_to_bounds(px.sample(n_init * 100).double(), bounds.double())[:ninit, ...]
         train_Y = func_(train_X).reshape(-1, 1)
         
         # Sequential Loop: fit GP, compute π_n, KDE-sample, update GP
@@ -159,20 +162,12 @@ for REP in range(REPS):
             print(f"REP {REP} Iteration {it}: newx shape {new_X.shape}, total training points = {train_X.shape[0]} fp {fp_}", flush=True)
 
             # save to file
-            try:
-                filename = "results/" + args.wd + f"/FP_{REP}.npy" 
-                np.save(filename, np.array(fp))
-                filename = "results/" + args.wd + f"/X_{REP}.npy" 
-                np.save(filename, train_X.numpy())
-                filename = "results/" + args.wd + f"/Y_{REP}.npy" 
-                np.save(filename, train_Y.numpy())
-            except FileNotFoundError:
-                directory_name = "results/" + args.wd
-                os.mkdir(directory_name)
-                filename = directory_name + "/" + f"FP_{REP}.npy"
-                np.save(filename, np.array(fp))
-                filename = "results/" + args.wd + f"/X_{REP}.npy" 
-                np.save(filename, train_X.numpy())
-                filename = "results/" + args.wd + f"/Y_{REP}.npy" 
-                np.save(filename, train_Y.numpy())
-                
+            fp_val = fp_.item() if torch.is_tensor(fp_) else float(fp_)
+            fp.append(fp_val)
+
+            np.save(os.path.join(outdir, f"FP_{REP}.npy"),
+                    np.asarray(fp, dtype=np.float64).reshape(-1, 1))
+            np.save(os.path.join(outdir, f"X_{REP}.npy"),
+                    train_X.detach().cpu().numpy())
+            np.save(os.path.join(outdir, f"Y_{REP}.npy"),
+                    train_Y.detach().cpu().numpy())                
