@@ -157,7 +157,6 @@ for REP in range(REPS):
             elif estimator.lower() == "mfmis":
                 fp_ = MISEestimatorMF(gp, proposals, samples_X, samples_Y, failure_fn, bounds, 
                                       MC_size=2_00_000, clip_to_bounds=clip_to_bounds)
-            fp.append(fp_)
         
             print(f"REP {REP} Iteration {it}: newx shape {new_X.shape}, total training points = {train_X.shape[0]} fp {fp_}", flush=True)
 
@@ -166,7 +165,7 @@ for REP in range(REPS):
             fp.append(fp_val)
 
             np.save(os.path.join(outdir, f"FP_{REP}.npy"),
-                    np.asarray(fp, dtype=np.float64).reshape(-1, 1))
+                    np.array(fp, dtype=np.float64))
             np.save(os.path.join(outdir, f"X_{REP}.npy"),
                     train_X.detach().cpu().numpy())
             np.save(os.path.join(outdir, f"Y_{REP}.npy"),
