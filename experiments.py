@@ -120,7 +120,7 @@ for REP in range(REPS):
         pilot_X = clip_to_bounds(px.sample(m * 100).double(), bounds.double())[:m, ...]
         
         # Initial training design
-        train_X = clip_to_bounds(px.sample(n_init * 100).double(), bounds.double())[:ninit, ...]
+        train_X = clip_to_bounds(px.sample(n_init * 100).double(), bounds.double())[:n_init, ...]
         train_Y = func_(train_X).reshape(-1, 1)
         
         # Sequential Loop: fit GP, compute π_n, KDE-sample, update GP
