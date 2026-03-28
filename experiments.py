@@ -75,6 +75,11 @@ parser.add_argument("--estimator", type=str, default="mis",
                     choices=["mis", "is", "mfmis"],
                     help="importance estimator type")
 
+parser.add_argument("--budget", type=int, default=100,
+                    help="total number of evaluations")
+
+parser.add_argument("--two_stage", type=lambda x: x.lower() == 'true')
+
 args = parser.parse_args()
 
 # Access values
@@ -93,6 +98,8 @@ alpha = args.alpha
 h = args.h
 REPS = args.REPS
 estimator = args.estimator
+two_stage = args.two_stage
+budget = args.budget
 
 sampler = func.sampler
 pdf = func.pdf
@@ -150,13 +157,24 @@ for REP in range(REPS):
             proposals.append(qx)
 
             # failure prob
-            if estimator.lower() == "mis":
-                fp_, _, _, _ = MISEestimator_(proposals, samples_X, samples_Y, failure_fn)
-            elif estimator.lower() == "is":
+            if not two_stage or two_stage is None:
+                if estimator.lower() == "mis":
+                    fp_, _, _, _ = MISEestimator_(proposals, samples_X, samples_Y, failure_fn)
+                elif estimator.lower() == "is":
+                    fp_, _, _, _ = ISEestimator_(proposals, samples_X, samples_Y, failure_fn)
+                elif estimator.lower() == "mfmis":
+                    fp_ = MISEestimatorMF(gp, proposals, samples_X, samples_Y, failure_fn, bounds, 
+                                          MC_size=2_00_000, clip_to_bounds=clip_to_bounds)
+            else:
+                n_estimator_samples = budget - n_init                
+                samples = torch.tensor(qx.sample(n_estimator_samples * 100), device=device)                
+                samples_clipped = clip_to_bounds(samples.double(), bounds.double())[:n_estimator_samples, ...]
+                samples_X.append(samples_clipped)
+                samples_Y.append(func_(samples_clipped).reshape(-1, 1) )
+                print(f"computing two-stage failure probability ...", flush=True)
                 fp_, _, _, _ = ISEestimator_(proposals, samples_X, samples_Y, failure_fn)
-            elif estimator.lower() == "mfmis":
-                fp_ = MISEestimatorMF(gp, proposals, samples_X, samples_Y, failure_fn, bounds, 
-                                      MC_size=2_00_000, clip_to_bounds=clip_to_bounds)
+                print(f"... done.", flush=True)
+                it = num_iters + 1    
         
             print(f"REP {REP} Iteration {it}: newx shape {new_X.shape}, total training points = {train_X.shape[0]} fp {fp_}", flush=True)
 

@@ -394,6 +394,7 @@ def MISEestimatorMF(gp, proposals, samples_X, samples_Y, failure_fn, bounds, MC_
         X = px.sample(MC_size)
     # Y = gp.posterior(normalize(X, bounds)).mean.detach()
     Y = gp.posterior(X).mean.detach()
+    
     fpmc = torch.mean(failure_fn(Y) * 1.)
 
     return fpmc + fpmis
@@ -845,56 +846,3 @@ def MCEestimator_(proposals, samples_X, samples_Y, failure_fn):
     fpmis = torch.mean( torch.concat(num) / torch.concat(den).sum()) # debug
 
     return fpmis, indicators, num, den
-# ------------------------------
-# Minimal example (can be run as a script)
-# ------------------------------
-
-if __name__ == "__main__":
-    # Toy 2D example using a uniform "p" on [-2,2]^2 and two proposals,
-    # where q0 is uniform (same as p), and q1 is a KDE fit on a biased set.
-    torch.set_default_dtype(torch.float64)
-    device = torch.device("cpu")
-
-    # Define bounds and target distribution
-    bounds = torch.tensor([[-2.0, 2.0],
-                           [-2.0, 2.0]], dtype=torch.float64, device=device)
-    p = UniformBox(bounds)
-
-    # Synthetic "failure" function: failure if x1 + x2 > 1
-    def failure_fn(X: Tensor) -> Tensor:
-        return (X[:, 0] + X[:, 1] > 1.0)
-
-    # Proposals: q0 uniform, q1 = KDE around some biased cloud near the failure boundary
-    q0 = UniformBox(bounds)
-
-    # Make some biased samples near failure
-    rng = torch.Generator(device=device).manual_seed(0)
-    base = q0.sample(500, generator=rng)
-    mask = (base[:, 0] + base[:, 1] > 0.5)
-    pilot_X = base[mask]
-    if pilot_X.shape[0] < 50:
-        pilot_X = base  # fall back to all points if mask is too strict
-
-    proposals = [q0]
-    batches = [q0.sample(2000, generator=rng)]
-
-    if _HAS_NUMPY_KDE:
-        kde_prop = KDEProposal.from_samples(pilot_X)
-        proposals.append(kde_prop)
-        # Draw from KDE
-        # NOTE: sample() ignores torch.Generator due to numpy backend.
-        batches.append(kde_prop.sample(1000))
-    else:
-        # If numpy KDE isn't available, just reuse uniform to complete the API
-        proposals.append(q0)
-        batches.append(q0.sample(1000, generator=rng))
-
-    est = MISEstimator(p, proposals, failure_fn, device=device)
-
-    # DM estimator (unbiased)
-    out_dm = est.estimate_from_batches(batches, estimator="dm")
-    print("[DM]  pf_hat =", float(out_dm["pf_hat"]), "  CI95 =", tuple(map(float, out_dm["ci95"])))
-
-    # SNIS estimator (consistent)
-    out_snis = est.estimate_from_batches(batches, estimator="snis")
-    print("[SNIS] pf_hat =", float(out_snis["pf_hat"]), "  CI95 =", tuple(map(float, out_snis["ci95"])))
