@@ -7,7 +7,7 @@ from botorch.models import SingleTaskGP
 from gpytorch.mlls import ExactMarginalLogLikelihood
 
 from kdemixture import KDEMixture
-from utils import STD_NORMAL, set_seed
+from utils import set_seed
 
 @torch.no_grad()
 def gp_posterior_pi(model: SingleTaskGP, X: torch.Tensor, threshold: float) -> torch.Tensor:
@@ -17,7 +17,8 @@ def gp_posterior_pi(model: SingleTaskGP, X: torch.Tensor, threshold: float) -> t
     std = var.sqrt()
     # P(f > t) = 1 - Phi((t - mu)/std)
     z = (threshold - mu) / std
-    return 1.0 - STD_NORMAL.cdf(z)
+    std_normal = torch.distributions.Normal(torch.zeros_like(z), torch.ones_like(z))
+    return 1.0 - std_normal.cdf(z)
 
 def fit_gp(X: torch.Tensor, Y: torch.Tensor) -> SingleTaskGP:
     model = SingleTaskGP(X, Y)
@@ -98,7 +99,7 @@ def run_experiment(
 
         QN = num / float(total_counts)              # (N,)
         # MIS weights and indicator
-        ind_fail = (Y.squeeze(-1) > t).double()
+        ind_fail = (Y.squeeze(-1) > t).to(dtype=Y.dtype)
         wMIS = torch.exp(logpXi) / QN
         pf_hat = (ind_fail * wMIS).mean().item()
         print(f"iter {it:02d} | N={X.shape[0]:5d} | pf^MIS ≈ {pf_hat:.3e} | eta={eta_n:.3g}")

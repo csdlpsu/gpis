@@ -9,8 +9,10 @@ from torch import Tensor
 from mis_estimator import MISEestimator_, ISEestimator_
 import os
 from mpi4py import MPI
+from utils import DEVICE, DTYPE, set_seed
 
-device = torch.device("cpu")
+device = DEVICE
+dtype = DTYPE
 
 
 comm = MPI.COMM_WORLD
@@ -18,8 +20,8 @@ rank = comm.Get_rank()
 size = comm.Get_size()
 
 # Problem Setup
-func = FourBranch()
-func_= FourBranch().eval # Herbie().eval
+func = FourBranch(dtype=dtype, device=device)
+func_= func.eval
 D = func.dim
 bounds = func.bounds
 # Rare failure threshold for <1e-6 failure probability
@@ -45,8 +47,8 @@ def pdf_unif(x):
 def make_uniform_box_sampler(
         bounds: Tensor,
         *,
-        dtype: torch.dtype = torch.float64,
-        device: Optional[torch.device] = None,
+        dtype: torch.dtype = dtype,
+        device: Optional[torch.device] = device,
 ) -> Callable[[int, Optional[torch.Generator]], Tensor]:
     """
     Factory: returns a sampler(n, generator) that draws n samples uniformly
@@ -74,8 +76,7 @@ for REP in range(REPS):
 
     if REP % size == rank:
 
-        np.random.seed(111 + REP)
-        torch.manual_seed(111 + REP)
+        set_seed(111 + REP)
 
         # Generate pilot samples for KDE (uniform p(x))
         pilot_X = px.sample(m)
@@ -122,9 +123,10 @@ for REP in range(REPS):
             elif estimator.lower() == "is":
                 fp_, _, _, _ = ISEestimator_(proposals, samples_X, samples_Y, failure_fn)
 
-            fp.append(fp_)
+            fp_val = fp_.item() if torch.is_tensor(fp_) else float(fp_)
+            fp.append(fp_val)
 
-            print(f"REP {REP} Iteration {it}: total training points = {train_X.shape[0]} fp {fp_}", flush=True)
+            print(f"REP {REP} Iteration {it}: total training points = {train_X.shape[0]} fp {fp_val}", flush=True)
 
             try:
                 filename = f"results/fb_is/REP_{REP}.npy"

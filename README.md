@@ -143,6 +143,8 @@ srun -n 4 python experiments.py --testfunction herbie --wd herbie_parallel --REP
 
 ## Notes
 
+- Torch code defaults to `torch.float64` and automatically uses CUDA when a GPU
+  is available; otherwise it runs on CPU.
 - Larger `--m` values improve the KDE pilot set but increase memory and runtime.
 - Larger `--num_iters` values spend more simulator calls refining the proposal.
 - `--estimator mis` uses multiple importance sampling; `--estimator is` uses

@@ -23,13 +23,12 @@ from mis_estimator import MISEestimator_, ISEestimator_, MISEestimatorMF
 import os
 from mpi4py import MPI
 import argparse
+from utils import DEVICE, DTYPE, set_seed
 
 torch.set_num_threads(int(os.environ.get("SLURM_CPUS_PER_TASK", "1")))
 
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-else:
-    device = torch.device("cpu")
+device = DEVICE
+dtype = DTYPE
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 size = comm.Get_size()
@@ -78,14 +77,14 @@ parser.add_argument("--two_stage", type=lambda x: x.lower() == 'true')
 args = parser.parse_args()
 
 # Access values
-tf = TestFunctions(args.testfunction)
+tf = TestFunctions(args.testfunction, dtype=dtype, device=device)
 func = tf.func
 func_= tf.func_
 D = func.dim
 bounds = func.bounds.T
 
 t = args.t
-m = np.maximum(args.m, int(D * 50_000))
+m = int(np.maximum(args.m, int(D * 50_000)))
 q = args.q
 n_init = args.n_init
 num_iters = args.num_iters
@@ -115,14 +114,13 @@ for REP in range(REPS):
 
     if REP % size == rank:
 
-        np.random.seed(111 + REP)
-        torch.manual_seed(111 + REP)
+        set_seed(111 + REP)
         
         # Generate pilot samples for KDE (uniform p(x))
-        pilot_X = clip_to_bounds(px.sample(m * 100).double(), bounds.double())[:m, ...]
+        pilot_X = clip_to_bounds(px.sample(m * 100).to(dtype=dtype, device=device), bounds.to(dtype=dtype, device=device))[:m, ...]
         
         # Initial training design
-        train_X = clip_to_bounds(px.sample(n_init * 100).double(), bounds.double())[:n_init, ...]
+        train_X = clip_to_bounds(px.sample(n_init * 100).to(dtype=dtype, device=device), bounds.to(dtype=dtype, device=device))[:n_init, ...]
         train_Y = func_(train_X).reshape(-1, 1)
         
         # Sequential Loop: fit GP, compute π_n, KDE-sample, update GP
@@ -134,13 +132,13 @@ for REP in range(REPS):
         
         for it in range(1, num_iters + 1):
             # Fit GP surrogate
-            gp = Surrogates(train_X.double(), train_Y.double(), bounds.double()).fit_gp()
+            gp = Surrogates(train_X, train_Y, bounds, dtype=dtype, device=device).fit_gp()
         
             weights = get_kde_weights(gp, px, pilot_X, train_X, bounds, t, alpha=0.9)
             list_of_weights.append(weights)
         
             new_X, qx = fit_and_sample_kde(pilot_X, weights, q=500) # 500 choose a large number, but keep the first q
-            new_X = clip_to_bounds(new_X.double(), bounds.double())[:q, ...]        
+            new_X = clip_to_bounds(new_X.to(dtype=dtype, device=device), bounds.to(dtype=dtype, device=device))[:q, ...]        
             new_Y = func_(new_X).reshape(-1, 1)
                         
             # Update training data
@@ -162,8 +160,8 @@ for REP in range(REPS):
                                           MC_size=2_00_000, clip_to_bounds=clip_to_bounds)
             else:
                 n_estimator_samples = budget - n_init                
-                samples = torch.tensor(qx.sample(n_estimator_samples * 100), device=device)                
-                samples_clipped = clip_to_bounds(samples.double(), bounds.double())[:n_estimator_samples, ...]
+                samples = torch.as_tensor(qx.sample(n_estimator_samples * 100), dtype=dtype, device=device)                
+                samples_clipped = clip_to_bounds(samples, bounds.to(dtype=dtype, device=device))[:n_estimator_samples, ...]
                 samples_X.append(samples_clipped)
                 samples_Y.append(func_(samples_clipped).reshape(-1, 1) )
                 print(f"computing two-stage failure probability ...", flush=True)

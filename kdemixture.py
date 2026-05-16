@@ -3,7 +3,7 @@ from typing import Callable, Tuple
 
 import torch
 
-from utils import device
+from utils import DEVICE, DTYPE
 
 
 class KDEMixture:
@@ -19,7 +19,9 @@ class KDEMixture:
         bandwidth: float,
         eta_schedule: Callable[[int], float],      # n -> eta_n
     ):
-        self.U = pilot_X.to(device)                 # (m,d)
+        self.device = pilot_X.device if isinstance(pilot_X, torch.Tensor) else DEVICE
+        self.dtype = pilot_X.dtype if isinstance(pilot_X, torch.Tensor) else DTYPE
+        self.U = pilot_X.to(dtype=self.dtype, device=self.device)                 # (m,d)
         self.m, self.d = self.U.shape
         self.h = float(bandwidth)
         self.p_sampler = p_sampler
@@ -34,9 +36,10 @@ class KDEMixture:
         Evaluate KDE_n(X) = sum_j w_j N(X | U_j, h^2 I).
         X: (N,d), weights: (m,), returns (N,)
         """
-        X = X.to(device)
+        X = X.to(dtype=self.dtype, device=self.device)
         N = X.shape[0]
-        out = torch.zeros(N, dtype=torch.double, device=device)
+        weights = weights.to(dtype=self.dtype, device=self.device)
+        out = torch.zeros(N, dtype=self.dtype, device=self.device)
         for start in range(0, self.m, chunk_m):
             stop = min(start + chunk_m, self.m)
             U_chunk = self.U[start:stop]                              # (m',d)
@@ -64,8 +67,8 @@ class KDEMixture:
         eta_n = float(self.eta_schedule(iter_idx))
         K_kde = torch.distributions.Binomial(total_count=K, probs=1.0 - eta_n).sample().to(torch.int64).item()
         K_p   = K - K_kde
-        Xk = self.sample_kde(weights, K_kde) if K_kde > 0 else torch.empty(0, self.d, dtype=torch.double, device=device)
-        Xp = self.p_sampler(K_p) if K_p > 0 else torch.empty(0, self.d, dtype=torch.double, device=device)
+        Xk = self.sample_kde(weights, K_kde) if K_kde > 0 else torch.empty(0, self.d, dtype=self.dtype, device=self.device)
+        Xp = self.p_sampler(K_p).to(dtype=self.dtype, device=self.device) if K_p > 0 else torch.empty(0, self.d, dtype=self.dtype, device=self.device)
         X  = torch.cat([Xk, Xp], dim=0) if K > 0 else Xk
         return X, eta_n
 

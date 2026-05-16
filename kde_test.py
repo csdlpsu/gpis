@@ -154,17 +154,24 @@ class GaussianKDE_():
 
     def __init__(self, X,  bw_method="silverman", weights=None):
 
-        self.X = X.T
+        X_np = X.detach().cpu().numpy() if hasattr(X, "detach") else np.asarray(X, dtype=float)
+        self.X = X_np.T
         self.bw_method = bw_method
-        self.weights = weights / weights.sum()
-        self.kde = gaussian_kde(self.X.numpy(), bw_method=self.bw_method, weights=self.weights.numpy())
+        if weights is None:
+            self.weights = None
+        else:
+            w_np = weights.detach().cpu().numpy() if hasattr(weights, "detach") else np.asarray(weights, dtype=float)
+            self.weights = w_np / w_np.sum()
+        self.kde = gaussian_kde(self.X, bw_method=self.bw_method, weights=self.weights)
         return
 
     def pdf(self, X):
-        return self.kde.pdf(X.T)
+        X_np = X.detach().cpu().numpy() if hasattr(X, "detach") else np.asarray(X, dtype=float)
+        return self.kde.pdf(X_np.T)
 
     def logpdf(self, X):
-        return self.kde.logpdf(X.T)
+        X_np = X.detach().cpu().numpy() if hasattr(X, "detach") else np.asarray(X, dtype=float)
+        return self.kde.logpdf(X_np.T)
 
     def sample(self, n):
         return self.kde.resample(n).T

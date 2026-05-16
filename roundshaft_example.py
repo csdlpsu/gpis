@@ -7,16 +7,18 @@ import torch
 from mis_estimator import MISEestimator_
 import os
 from mpi4py import MPI
+from utils import DEVICE, DTYPE, set_seed
 
-device = torch.device("cpu")
+device = DEVICE
+dtype = DTYPE
 
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 size = comm.Get_size()
 
 # Problem Setup
-func = RoundShaftBT()
-func_= RoundShaftBT().eval # Herbie().eval
+func = RoundShaftBT(dtype=dtype, device=device)
+func_= func.eval
 D = func.dim
 bounds = func.bounds
 # Rare failure threshold for <1e-6 failure probability
@@ -40,8 +42,7 @@ for REP in range(REPS):
 
     if REP % size == rank:
 
-        np.random.seed(111 + REP)
-        torch.manual_seed(111 + REP)
+        set_seed(111 + REP)
 
         # Generate pilot samples for KDE (uniform p(x))
         pilot_X = px.sample(m)
@@ -83,20 +84,20 @@ for REP in range(REPS):
             def failure_fn(X: torch.Tensor) -> torch.Tensor:
                 return (X.view(-1) > t)
             fp_, _, _, _ = MISEestimator_(proposals, samples_X, samples_Y, failure_fn)
-            # fp_, _, _, _ = ISEestimator_(proposals, samples_X, samples_Y, failure_fn)
-            fp.append(fp_)
+            fp_val = fp_.item() if torch.is_tensor(fp_) else float(fp_)
+            fp.append(fp_val)
 
-            print(f"REP {REP} Iteration {it}: total training points = {train_X.shape[0]} fp {fp_:1.10f}", flush=True)
+            print(f"REP {REP} Iteration {it}: total training points = {train_X.shape[0]} fp {fp_val:1.10f}", flush=True)
 
             try:
                 filename = f"results/roundshaft_test/REP_{REP}.npy"
                 filename2 = f"results/roundshaft_test/Y_{REP}.npy"
                 np.save(filename, np.array(fp))
-                np.save(filename2, train_Y.numpy())
+                np.save(filename2, train_Y.detach().cpu().numpy())
             except FileNotFoundError:
                 directory_name = "results/roundshaft_test"
                 os.mkdir(directory_name)
                 filename = directory_name + "/" + f"REP_{REP}.npy"
                 filename2 = f"results/roundshaft_test/Y_{REP}.npy"
                 np.save(filename, np.array(fp))
-                np.save(filename2, train_Y.numpy())
+                np.save(filename2, train_Y.detach().cpu().numpy())

@@ -6,13 +6,28 @@ import torch
 from torch import tensor
 from torch.distributions import Normal, MultivariateNormal
 
-torch.set_default_dtype(torch.double)
-device = torch.device("cpu")
+DTYPE = torch.float64
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-STD_NORMAL = Normal(loc=tensor(0.0, dtype=torch.double), scale=tensor(1.0, dtype=torch.double))
+torch.set_default_dtype(DTYPE)
+
+# Backward-compatible aliases used by older scripts in this repository.
+dtype = DTYPE
+device = DEVICE
+
+STD_NORMAL = Normal(
+    loc=tensor(0.0, dtype=DTYPE, device=DEVICE),
+    scale=tensor(1.0, dtype=DTYPE, device=DEVICE),
+)
+
+
+def as_tensor(x, *, dtype: torch.dtype = DTYPE, device: torch.device = DEVICE) -> torch.Tensor:
+    return torch.as_tensor(x, dtype=dtype, device=device)
 
 def set_seed(seed=1234):
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     random.seed(seed)
     np.random.seed(seed)
 

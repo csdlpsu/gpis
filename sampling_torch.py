@@ -4,12 +4,18 @@ import numpy as np
 import torch
 from torch import Tensor
 from kde_test import GaussianKDE, GaussianKDE_
+from utils import DEVICE, DTYPE
 TensorLike = Union[Tensor, float]
 
 # =========================
 # Utilities
 # =========================
-def _as_2d(x: TensorLike, dim: int, *, dtype: torch.dtype = torch.float64, device: Optional[torch.device] = None) -> Tensor:
+def _resolve_device(device: Optional[torch.device]) -> torch.device:
+    return DEVICE if device is None else torch.device(device)
+
+
+def _as_2d(x: TensorLike, dim: int, *, dtype: torch.dtype = DTYPE, device: Optional[torch.device] = None) -> Tensor:
+    device = _resolve_device(device)
     X = x if isinstance(x, Tensor) else torch.tensor(x, dtype=dtype, device=device)
     X = X.to(dtype=dtype, device=device)
     if X.ndim == 0:
@@ -28,7 +34,7 @@ def _vectorize_logpdf(
     logpdf: Callable[[Tensor], TensorLike],
     dim: int,
     *,
-    dtype: torch.dtype = torch.float64,
+    dtype: torch.dtype = DTYPE,
     device: Optional[torch.device] = None,
 ) -> Callable[[Tensor], Tensor]:
     """
@@ -83,7 +89,7 @@ class CustomDistribution:
         logZ: Optional[float] = None,
         sampler: Optional[Callable[[int, Optional[torch.Generator]], Tensor]] = None,
         support_indicator: Optional[Callable[[Tensor], Tensor]] = None,
-        dtype: torch.dtype = torch.float64,
+        dtype: torch.dtype = DTYPE,
         device: Optional[torch.device] = None,
     ):
         if pdf is None and logpdf is None:
@@ -96,7 +102,7 @@ class CustomDistribution:
         self._user_logpdf = logpdf
         self._sampler = sampler
         self.dtype = dtype
-        self.device = device
+        self.device = _resolve_device(device)
 
         if self._user_pdf is not None:
             # derive logpdf from pdf
@@ -104,10 +110,10 @@ class CustomDistribution:
 
             def _pdf_wrapped(X: Tensor) -> Tensor:
                 out = _pdf(X)
-                out = out if isinstance(out, Tensor) else torch.tensor(out, dtype=dtype, device=device)
-                return out.to(dtype=dtype, device=device)
+                out = out if isinstance(out, Tensor) else torch.tensor(out, dtype=dtype, device=self.device)
+                return out.to(dtype=dtype, device=self.device)
 
-            _vpdf = _vectorize_logpdf(_pdf_wrapped, self.dim, dtype=dtype, device=device)
+            _vpdf = _vectorize_logpdf(_pdf_wrapped, self.dim, dtype=dtype, device=self.device)
 
             def _derived_logpdf(X: Tensor) -> Tensor:
                 # guard against negatives
@@ -122,19 +128,19 @@ class CustomDistribution:
             _lp = self._user_logpdf  # type: ignore
             def _lp_wrapped(X: Tensor) -> Tensor:
                 out = _lp(X)  # type: ignore
-                out = out if isinstance(out, Tensor) else torch.tensor(out, dtype=dtype, device=device)
-                return out.to(dtype=dtype, device=device)
+                out = out if isinstance(out, Tensor) else torch.tensor(out, dtype=dtype, device=self.device)
+                return out.to(dtype=dtype, device=self.device)
 
-            self._logpdf = _vectorize_logpdf(_lp_wrapped, self.dim, dtype=dtype, device=device)
+            self._logpdf = _vectorize_logpdf(_lp_wrapped, self.dim, dtype=dtype, device=self.device)
 
         if support_indicator is None:
-            self._support_ind = lambda X: torch.ones(_as_2d(X, self.dim, dtype=dtype, device=device).shape[0],
-                                                     dtype=torch.bool, device=device)
+            self._support_ind = lambda X: torch.ones(_as_2d(X, self.dim, dtype=dtype, device=self.device).shape[0],
+                                                     dtype=torch.bool, device=self.device)
         else:
             def _si_wrapped(X: Tensor) -> Tensor:
                 out = support_indicator(X)
-                out = out if isinstance(out, Tensor) else torch.tensor(out, dtype=torch.bool, device=device)
-                return out.to(dtype=torch.bool, device=device).reshape(-1)
+                out = out if isinstance(out, Tensor) else torch.tensor(out, dtype=torch.bool, device=self.device)
+                return out.to(dtype=torch.bool, device=self.device).reshape(-1)
             self._support_ind = _si_wrapped
 
     # ---------- density evaluation ----------
@@ -174,7 +180,7 @@ class CustomDistribution:
         Returns: Tensor of shape (n, dim)
         """
         if self._sampler is not None:
-            return self._sampler(n, generator)
+            return self._sampler(n, generator).to(dtype=self.dtype, device=self.device)
 
         device = self.device
         dtype = self.dtype
@@ -241,7 +247,8 @@ class CustomDistribution:
 # =========================
 class Gaussian(CustomDistribution):
     """Multivariate normal N(m, Σ) with full covariance."""
-    def __init__(self, mean: TensorLike, cov: TensorLike, *, dtype: torch.dtype = torch.float64, device: Optional[torch.device] = None):
+    def __init__(self, mean: TensorLike, cov: TensorLike, *, dtype: torch.dtype = DTYPE, device: Optional[torch.device] = None):
+        device = _resolve_device(device)
         m = _as_2d(mean, dim=1, dtype=dtype, device=device).reshape(-1)  # (d,)
         C = torch.as_tensor(cov, dtype=dtype, device=device)
         d = m.numel()
@@ -278,9 +285,10 @@ class MixtureOfGaussians(CustomDistribution):
         means: TensorLike,
         covs: TensorLike,
         *,
-        dtype: torch.dtype = torch.float64,
+        dtype: torch.dtype = DTYPE,
         device: Optional[torch.device] = None,
     ):
+        device = _resolve_device(device)
         w = torch.as_tensor(weights, dtype=dtype, device=device).reshape(-1)  # (K,)
         if (w < 0).any():
             raise ValueError("weights must be nonnegative")
@@ -331,6 +339,28 @@ class MixtureOfGaussians(CustomDistribution):
 
 # Some helper functions
 
+class TorchKDEProposal:
+    """Torch-facing adapter for the NumPy GaussianKDE implementation."""
+
+    def __init__(self, kde: GaussianKDE, *, dtype: torch.dtype, device: torch.device):
+        self.kde = kde
+        self.dtype = dtype
+        self.device = device
+
+    def logpdf(self, X: Tensor) -> Tensor:
+        Xn = X.detach().to("cpu").numpy()
+        out = self.kde.logpdf(Xn)
+        return torch.as_tensor(out, dtype=self.dtype, device=self.device)
+
+    def pdf(self, X: Tensor) -> Tensor:
+        return torch.exp(self.logpdf(X))
+
+    def sample(self, n: int) -> Tensor:
+        if isinstance(n, tuple):
+            n = int(n[0])
+        return torch.as_tensor(self.kde.sample(int(n)), dtype=self.dtype, device=self.device)
+
+
 def weighted_kde_sample(pilot_X, weights, h, q, jitter=False):
     """
     Sample `q` points from the weighted Gaussian-KDE defined by (pilot_X, weights).
@@ -340,25 +370,29 @@ def weighted_kde_sample(pilot_X, weights, h, q, jitter=False):
     centers = pilot_X[idx]
     # 2) jitter each center by N(0, h^2 I)
     if jitter:
-        samples = centers + h * np.random.randn(q, pilot_X.shape[1])
+        samples = centers + h * torch.randn_like(centers)
     else:
         samples = centers
     return samples
 
 
 def fit_and_sample_kde(pilot_X, weights, q=1):
-    kde = GaussianKDE(pilot_X, weights=weights, bandwidth="silverman")
-
-    return torch.tensor(kde.sample(q), dtype=torch.double), kde
+    Xn = pilot_X.detach().to("cpu").numpy()
+    wn = weights.detach().to("cpu").numpy()
+    kde = GaussianKDE(Xn, weights=wn, bandwidth="silverman")
+    proposal = TorchKDEProposal(kde, dtype=pilot_X.dtype, device=pilot_X.device)
+    return proposal.sample(q), proposal
 
 
 def get_kde_weights(gp, px, pilot_X, train_X, bounds, threshold, alpha=1.0, normaliz=True):
     # Compute posterior failure prob π_n on pilot set
     with torch.no_grad():
-        post  = gp.posterior( pilot_X.double() )
+        pilot_X = pilot_X.to(dtype=DTYPE if pilot_X.dtype not in (torch.float32, torch.float64) else pilot_X.dtype)
+        post = gp.posterior(pilot_X)
         mu    = post.mean.squeeze()
         sigma = post.variance.sqrt().squeeze()
-    pi_vals_ = (1.0 - torch.distributions.Normal(mu, sigma).cdf(torch.tensor(threshold))).clamp(1e-12, 1.0)
+    threshold_t = torch.tensor(threshold, dtype=pilot_X.dtype, device=pilot_X.device)
+    pi_vals_ = (1.0 - torch.distributions.Normal(mu, sigma).cdf(threshold_t)).clamp(1e-12, 1.0)
     eta = min(1., .3 / np.sqrt(train_X.shape[0]))
     pi_vals = (1. - eta) * (pi_vals_ ** alpha) + eta * px.pdf(pilot_X)
     
@@ -370,32 +404,38 @@ def get_kde_weights(gp, px, pilot_X, train_X, bounds, threshold, alpha=1.0, norm
         return weights
 
 def fit_and_sample_kde_(pilot_X, weights, q=1, *, train_X=None):
-    kde = GaussianKDE(pilot_X, weights=weights, bandwidth="silverman")
-    samples = torch.tensor(kde.sample(100 * q), dtype=torch.double)
+    Xn = pilot_X.detach().to("cpu").numpy()
+    wn = weights.detach().to("cpu").numpy()
+    kde = GaussianKDE(Xn, weights=wn, bandwidth="silverman")
+    proposal = TorchKDEProposal(kde, dtype=pilot_X.dtype, device=pilot_X.device)
+    samples = proposal.sample(100 * q)
     if train_X is None:
-        return samples[:q], kde
-    return maximin(samples, train_X, q), kde
+        return samples[:q], proposal
+    return maximin(samples, train_X, q), proposal
 
 def fit_and_sample_kde_scipy(pilot_X, weights, q=1, *, train_X=None):
-    kde = GaussianKDE_(pilot_X, bw_method="silverman", weights=weights)
-    samples = torch.tensor(kde.sample(100 * q), dtype=torch.double)
+    Xn = pilot_X.detach().to("cpu").numpy()
+    wn = weights.detach().to("cpu").numpy()
+    kde = GaussianKDE_(Xn, bw_method="silverman", weights=wn)
+    proposal = TorchKDEProposal(kde, dtype=pilot_X.dtype, device=pilot_X.device)
+    samples = proposal.sample(100 * q)
     if train_X is None:
-        return samples[:q], kde
-    return samples[:q], kde
+        return samples[:q], proposal
+    return samples[:q], proposal
 
 def maximin(samples, train_X, q):
-    samples = samples.detach().cpu().double()
-    train_X = train_X.detach().cpu().double()
+    samples = samples.detach().to(dtype=train_X.dtype, device=train_X.device)
+    train_X = train_X.detach()
     if train_X.ndim == 1:
         train_X = train_X.unsqueeze(0)
 
     chosen = []
-    mask = torch.ones(samples.size(0), dtype=torch.bool)
+    mask = torch.ones(samples.size(0), dtype=torch.bool, device=samples.device)
     curr = train_X
     for _ in range(q):
         d = torch.cdist(samples[mask], curr).min(dim=1).values
         i_rel = torch.argmax(d)
-        idxs = torch.arange(samples.size(0))[mask]
+        idxs = torch.arange(samples.size(0), device=samples.device)[mask]
         i_abs = idxs[i_rel]
         chosen.append(samples[i_abs])
         curr = torch.cat([curr, samples[i_abs:i_abs+1]], dim=0)
@@ -404,11 +444,11 @@ def maximin(samples, train_X, q):
 
 
 # =========================
-# Example usage (CPU)
+# Example usage
 # =========================
 if __name__ == "__main__":
-    device = torch.device("cpu")
-    dtype = torch.float64
+    device = DEVICE
+    dtype = DTYPE
     gen = torch.Generator(device=device).manual_seed(0)
 
     # 1) User-defined normalized pdf in 1D (bimodal, normalized by hand)

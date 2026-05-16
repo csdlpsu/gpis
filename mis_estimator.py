@@ -25,6 +25,7 @@ from typing import Callable, Optional, Sequence, Dict, Union
 
 import torch
 from torch import Tensor
+from utils import DEVICE, DTYPE
 
 # Optional: wrap your numpy KDE (from kde_test import GaussianKDE) for convenience.
 try:
@@ -43,6 +44,10 @@ def _as_tensor(x: Union[Tensor, float], *, dtype: torch.dtype, device: torch.dev
     if isinstance(x, Tensor):
         return x.to(dtype=dtype, device=device)
     return torch.tensor(x, dtype=dtype, device=device)
+
+
+def _resolve_device(device: Optional[torch.device]) -> torch.device:
+    return DEVICE if device is None else torch.device(device)
 
 def _logsumexp(a: Tensor, dim: int = -1) -> Tensor:
     """Stable log-sum-exp."""
@@ -66,7 +71,9 @@ class Box:
 
     def __post_init__(self):
         if not isinstance(self.bounds, Tensor):
-            self.bounds = torch.as_tensor(self.bounds, dtype=torch.float64)
+            self.bounds = torch.as_tensor(self.bounds, dtype=DTYPE, device=DEVICE)
+        else:
+            self.bounds = self.bounds.to(dtype=DTYPE, device=self.bounds.device)
         if self.bounds.ndim != 2 or self.bounds.shape[1] != 2:
             raise ValueError("bounds must be (d, 2) tensor.")
         if torch.any(self.bounds[:, 1] <= self.bounds[:, 0]):
@@ -78,7 +85,8 @@ class UniformBox:
     Uniform distribution on an axis-aligned box.
     Provides a Torch-first interface: logpdf(X) and sample(n).
     """
-    def __init__(self, bounds: Tensor, dtype: torch.dtype = torch.float64, device: Optional[torch.device] = None):
+    def __init__(self, bounds: Tensor, dtype: torch.dtype = DTYPE, device: Optional[torch.device] = None):
+        device = _resolve_device(device)
         if not isinstance(bounds, Tensor):
             bounds = torch.as_tensor(bounds, dtype=dtype, device=device)
         self.bounds = bounds.to(dtype=dtype, device=device)
@@ -116,12 +124,12 @@ class KDEProposal:
 
     Note: sampling uses the KDE's Gaussian noise sampling; .logpdf is exact to the KDE definition.
     """
-    def __init__(self, kde: "GaussianKDE", dtype: torch.dtype = torch.float64, device: Optional[torch.device] = None):
+    def __init__(self, kde: "GaussianKDE", dtype: torch.dtype = DTYPE, device: Optional[torch.device] = None):
         if not _HAS_NUMPY_KDE:
             raise RuntimeError("GaussianKDE not available. Import failed.")
         self.kde = kde
         self.dtype = dtype
-        self.device = torch.device("cpu") if device is None else device
+        self.device = _resolve_device(device)
 
     @classmethod
     def from_samples(
@@ -129,18 +137,19 @@ class KDEProposal:
         X: Tensor,
         weights: Optional[Tensor] = None,
         H: Optional[Union[str, float, np.ndarray]] = None,
-        dtype: torch.dtype = torch.float64,
+        dtype: torch.dtype = DTYPE,
         device: Optional[torch.device] = None,
     ) -> "KDEProposal":
         if not _HAS_NUMPY_KDE:
             raise RuntimeError("GaussianKDE not available. Import failed.")
-        Xn = X.detach().to("cpu", dtype=torch.double).numpy()
-        wn = None if weights is None else weights.detach().to("cpu", dtype=torch.double).numpy()
-        kde = GaussianKDE(Xn, weights=wn, H=H)
-        return cls(kde, dtype=dtype, device=device)
+        target_device = X.device if device is None else _resolve_device(device)
+        Xn = X.detach().to("cpu", dtype=DTYPE).numpy()
+        wn = None if weights is None else weights.detach().to("cpu", dtype=DTYPE).numpy()
+        kde = GaussianKDE(Xn, weights=wn, bandwidth="scott" if H is None else H)
+        return cls(kde, dtype=dtype, device=target_device)
 
     def logpdf(self, X: Tensor, chunk_size: int = 4096) -> Tensor:
-        Xn = X.detach().to("cpu", dtype=torch.double).numpy()
+        Xn = X.detach().to("cpu", dtype=DTYPE).numpy()
         # Use chunking to avoid memory spikes
         out = []
         for i in range(0, Xn.shape[0], chunk_size):
@@ -189,14 +198,14 @@ class MISEstimator:
         proposals: Sequence,
         failure_fn: Callable[[Tensor], Union[Tensor, torch.BoolTensor]],
         *,
-        dtype: torch.dtype = torch.float64,
+        dtype: torch.dtype = DTYPE,
         device: Optional[torch.device] = None,
     ):
         self.p = p
         self.proposals = list(proposals)
         self.failure_fn = failure_fn
         self.dtype = dtype
-        self.device = torch.device("cpu") if device is None else device
+        self.device = _resolve_device(device)
 
     # ---- mixture evaluation helpers ----
     def _mixture_logpdf(self, X: Tensor, log_alphas: Tensor) -> Tensor:
@@ -349,8 +358,9 @@ def MISEestimator_(proposals, samples_X, samples_Y, failure_fn):
     samples -- Batches of points sampled from each density. A list of arrays
     failure_fn -- a callable that evaluates failure on a vector Y
     """
+    ref = samples_X[0]
     nbatch = [(samples_Y[i].squeeze()).shape[0] for i in range(len(samples_Y))]
-    prop_weights = torch.tensor(nbatch) / sum(nbatch)
+    prop_weights = torch.tensor(nbatch, dtype=ref.dtype, device=ref.device) / sum(nbatch)
     indicators = failure_fn(torch.concat(samples_Y))
 
     num = []
@@ -359,7 +369,7 @@ def MISEestimator_(proposals, samples_X, samples_Y, failure_fn):
     px = proposals[0]  # nominal
     for i in range(len(proposals)):
         num.append(torch.exp(px.logpdf(samples_X[i])))
-        den.append(prop_weights[i] * np.exp(proposals[i].logpdf(samples_X[i])))
+        den.append(prop_weights[i] * torch.exp(proposals[i].logpdf(samples_X[i])))
     fpmis = torch.mean((indicators * 1) * torch.concat(num) / torch.concat(den).sum())
 
     return fpmis, indicators, num, den
@@ -370,8 +380,9 @@ def MISEestimatorMF(gp, proposals, samples_X, samples_Y, failure_fn, bounds, MC_
     samples -- Batches of points sampled from each density. A list of arrays
     failure_fn -- a callable that evaluates failure on a vector Y
     """
+    ref = samples_X[0]
     nbatch = [(samples_Y[i].squeeze()).shape[0] for i in range(len(samples_Y))]
-    prop_weights = torch.tensor(nbatch) / sum(nbatch)
+    prop_weights = torch.tensor(nbatch, dtype=ref.dtype, device=ref.device) / sum(nbatch)
     indicators_hf = failure_fn(torch.concat(samples_Y))
     indicators_lf = failure_fn( gp.posterior(torch.concat(samples_X)).mean.detach() )
     num = []
@@ -380,11 +391,11 @@ def MISEestimatorMF(gp, proposals, samples_X, samples_Y, failure_fn, bounds, MC_
     px = proposals[0]  # nominal
     for i in range(len(proposals)):
         num.append(torch.exp(px.logpdf(samples_X[i])))
-        den.append(prop_weights[i] * np.exp(proposals[i].logpdf(samples_X[i])))
+        den.append(prop_weights[i] * torch.exp(proposals[i].logpdf(samples_X[i])))
     fpmis = torch.mean( ((indicators_hf * 1) - (indicators_lf * 1)) * torch.concat(num) / torch.concat(den).sum())
 
     if clip_to_bounds is not None:
-        X = clip_to_bounds(px.sample(MC_size).double(), bounds.double())  
+        X = clip_to_bounds(px.sample(MC_size).to(dtype=ref.dtype, device=ref.device), bounds.to(dtype=ref.dtype, device=ref.device))  
     else:
         X = px.sample(MC_size)
     Y = gp.posterior(X).mean.detach()
@@ -510,14 +521,15 @@ def MFEestimator_(proposals, samples_X, samples_Y, failure_fn, gp_model=None):
     if N_hf <= 0:
         raise ValueError("Need at least one HF sample.")
 
-    prop_weights_hf = torch.tensor(nbatch_hf, dtype=torch.get_default_dtype())
+    ref = samples_X[0]
+    prop_weights_hf = torch.tensor(nbatch_hf, dtype=ref.dtype, device=ref.device)
     prop_weights_hf = prop_weights_hf / prop_weights_hf.sum()
 
     px = proposals[0]  # nominal density p(x)
 
     # True indicators on HF outputs
     Y_hf_all = torch.concat(samples_Y, dim=0)
-    indicators_true = failure_fn(Y_hf_all).to(torch.get_default_dtype()).reshape(-1)
+    indicators_true = failure_fn(Y_hf_all).to(dtype=ref.dtype, device=ref.device).reshape(-1)
 
     # MIS weights on HF inputs
     num, den = [], []
@@ -699,7 +711,8 @@ def MFEestimator2_(proposals, samples_X, samples_Y, failure_fn, gp_model=None):
     # HF true indicator
     # ----------------------------
     Y_hf_all = torch.concat(samples_Y, dim=0)
-    indicators_true = failure_fn(Y_hf_all).to(torch.get_default_dtype()).reshape(-1)
+    ref = samples_X[0]
+    indicators_true = failure_fn(Y_hf_all).to(dtype=ref.dtype, device=ref.device).reshape(-1)
 
     # If no GP, return stratified IS on HF only (fast, unbiased)
     # (This replaces your previous deterministic-mixture MIS with a faster unbiased variant.)
@@ -804,7 +817,7 @@ def ISEestimator_(proposals, samples_X, samples_Y, failure_fn):
 
     px = proposals[0]  # nominal
     num.append(torch.exp(px.logpdf(samples_X[-1])))
-    den.append( torch.tensor( np.exp(proposals[-1].logpdf(samples_X[-1]))) )
+    den.append(torch.exp(proposals[-1].logpdf(samples_X[-1])).to(dtype=samples_X[-1].dtype, device=samples_X[-1].device))
     fpmis = torch.mean(torch.concat(num) / torch.concat(den).sum())
     return fpmis, indicators, num, den
 
@@ -817,7 +830,7 @@ def MCEestimator_(proposals, samples_X, samples_Y, failure_fn):
     n_proposals = len(proposals)
     nbatch = [ i for i in range(n_proposals)]
     nbatch.append(1)
-    prop_weights = torch.tensor(nbatch) / sum(nbatch)
+    prop_weights = torch.tensor(nbatch, dtype=samples_X[0].dtype, device=samples_X[0].device) / sum(nbatch)
     indicators = failure_fn(torch.concat(samples_Y))
 
     num = []
@@ -826,7 +839,7 @@ def MCEestimator_(proposals, samples_X, samples_Y, failure_fn):
     px = proposals[0]  # nominal
     for i in range(len(proposals)):
         num.append(torch.exp(px.logpdf(samples_X[i])))
-        den.append(prop_weights[i] * np.exp(proposals[i].logpdf(samples_X[i])))
+        den.append(prop_weights[i] * torch.exp(proposals[i].logpdf(samples_X[i])))
     # fpmis = torch.mean((indicators * 1) * torch.concat(num) / torch.concat(den).sum())
     fpmis = torch.mean( torch.concat(num) / torch.concat(den).sum()) # debug
 
