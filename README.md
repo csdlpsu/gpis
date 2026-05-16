@@ -1,5 +1,7 @@
 # GPIS
 
+[![arXiv](https://img.shields.io/badge/arXiv-2603.20959-b31b1b.svg)](https://arxiv.org/abs/2603.20959)
+
 Gaussian-process importance sampling for estimating rare-event failure
 probabilities in reliability problems with expensive black-box simulators.
 
