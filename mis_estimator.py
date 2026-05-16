@@ -1,5 +1,5 @@
 
-"""
+r"""
 Modular Multiple Importance Sampling (MIS) estimator for failure probability.
 
 Given M proposal densities {q_j}_{j=1,..,M} and N = \sum_j n_j samples,
@@ -21,12 +21,10 @@ which is consistent (asymptotically unbiased). Both are supported.
 """
 
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence, Dict, Union, Tuple
-import math
+from typing import Callable, Optional, Sequence, Dict, Union
 
 import torch
 from torch import Tensor
-from botorch.utils.transforms import normalize
 
 # Optional: wrap your numpy KDE (from kde_test import GaussianKDE) for convenience.
 try:
@@ -266,8 +264,8 @@ class MISEstimator:
         log_psi = self._mixture_logpdf(X, log_alphas)  # log Σ α_j q_j(x)
 
         # Failure indicator
-        I = self.failure_fn(X)
-        I = I.to(dtype=self.dtype, device=self.device).view(-1)
+        indicator = self.failure_fn(X)
+        indicator = indicator.to(dtype=self.dtype, device=self.device).view(-1)
 
         # Importance weights w = p/ψ (in log-space for stability)
         log_w = log_p - log_psi
@@ -276,7 +274,7 @@ class MISEstimator:
         # --- estimators ---
         if estimator.lower() == "dm":
             # Unbiased deterministic mixture estimator
-            Z = I * w  # per-sample contribution
+            Z = indicator * w  # per-sample contribution
             pf_hat = torch.mean(Z)
 
             # SE via sample variance of Z_i / N
@@ -291,7 +289,7 @@ class MISEstimator:
 
         elif estimator.lower() == "snis":
             # Self-normalized IS estimator
-            num = torch.sum(I * w)
+            num = torch.sum(indicator * w)
             den = torch.sum(w)
             pf_hat = num / den
 
@@ -316,7 +314,7 @@ class MISEstimator:
         }
         if return_per_sample:
             out["w"] = w
-            out["I"] = I
+            out["I"] = indicator
             out["log_w"] = log_w
             out["log_p"] = log_p
             out["log_psi"] = log_psi
@@ -351,7 +349,6 @@ def MISEestimator_(proposals, samples_X, samples_Y, failure_fn):
     samples -- Batches of points sampled from each density. A list of arrays
     failure_fn -- a callable that evaluates failure on a vector Y
     """
-    n_proposals = len(proposals)
     nbatch = [(samples_Y[i].squeeze()).shape[0] for i in range(len(samples_Y))]
     prop_weights = torch.tensor(nbatch) / sum(nbatch)
     indicators = failure_fn(torch.concat(samples_Y))
@@ -373,11 +370,9 @@ def MISEestimatorMF(gp, proposals, samples_X, samples_Y, failure_fn, bounds, MC_
     samples -- Batches of points sampled from each density. A list of arrays
     failure_fn -- a callable that evaluates failure on a vector Y
     """
-    n_proposals = len(proposals)
     nbatch = [(samples_Y[i].squeeze()).shape[0] for i in range(len(samples_Y))]
     prop_weights = torch.tensor(nbatch) / sum(nbatch)
     indicators_hf = failure_fn(torch.concat(samples_Y))
-    # indicators_lf = failure_fn( gp.posterior(normalize(torch.concat(samples_X), bounds)).mean.detach() )
     indicators_lf = failure_fn( gp.posterior(torch.concat(samples_X)).mean.detach() )
     num = []
     den = []
@@ -392,7 +387,6 @@ def MISEestimatorMF(gp, proposals, samples_X, samples_Y, failure_fn, bounds, MC_
         X = clip_to_bounds(px.sample(MC_size).double(), bounds.double())  
     else:
         X = px.sample(MC_size)
-    # Y = gp.posterior(normalize(X, bounds)).mean.detach()
     Y = gp.posterior(X).mean.detach()
     
     fpmc = torch.mean(failure_fn(Y) * 1.)
@@ -803,24 +797,15 @@ def ISEestimator_(proposals, samples_X, samples_Y, failure_fn):
     samples -- Batches of points sampled from each density. A list of arrays
     failure_fn -- a callable that evaluates failure on a vector Y
     """
-    n_proposals = len(proposals)
-    nbatch = [ 0 for i in range(n_proposals)]
-    nbatch.append(1)
-    prop_weights = torch.tensor(nbatch) / sum(nbatch)
     indicators = failure_fn(torch.concat(samples_Y))
 
     num = []
     den = []
 
     px = proposals[0]  # nominal
-    # for i in range(len(proposals)):
-    #     num.append(torch.exp(px.logpdf(samples_X[i])))
-    #     den.append(prop_weights[i] * np.exp(proposals[i].logpdf(samples_X[i])))
     num.append(torch.exp(px.logpdf(samples_X[-1])))
     den.append( torch.tensor( np.exp(proposals[-1].logpdf(samples_X[-1]))) )
-    # fpmis = torch.mean((indicators * 1) * torch.concat(num) / torch.concat(den).sum())
-    # fpmis = torch.mean(torch.concat(num) / torch.concat(den).sum())  # debug
-    fpmis = torch.mean(torch.concat(num) / torch.concat(den).sum())  # debug
+    fpmis = torch.mean(torch.concat(num) / torch.concat(den).sum())
     return fpmis, indicators, num, den
 
 def MCEestimator_(proposals, samples_X, samples_Y, failure_fn):

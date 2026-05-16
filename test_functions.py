@@ -1,10 +1,12 @@
+import math
+from typing import Optional, Tuple
+
 import torch
+from torch import tensor
 
-from utils import *
-from typing import Optional, Callable, Tuple
-# from typing import Any, Dict, List, Optional, Sequence
+device = torch.device("cpu")
 
-class TestFunctions():
+class TestFunctions:
 
     def __init__(self, functionname, negate=False):
         # general attributes
@@ -24,9 +26,7 @@ class TestFunctions():
             self.func_= FourBranch().eval 
         else:
             raise NotImplementedError("Entered function name is not implemented")
-        return
-
-class Herbie():
+class Herbie:
 
     def __init__(self, negate=False, dtype=torch.double):
         self.negate = negate
@@ -53,14 +53,14 @@ class Herbie():
         g(x) = threshold - herbie(x)
         (You can tune `threshold` to control difficulty; 2.0–2.5 are common.)
         """
-        return threshold - self.herbie(X)
+        return threshold - self.eval(X)
 
     def f_eval(self, X: torch.Tensor, threshold: float = 2.0) -> torch.Tensor:
         """
         Failure score used elsewhere in your code: failure if f > 0.
         f(x) = -g(x) = herbie(x) - threshold
         """
-        return -self.herbie_g(X, threshold=threshold)
+        return self.eval(X) - threshold
 
     
     def sampler(self, n: int, generator: Optional[torch.Generator]) -> torch.Tensor:
@@ -80,7 +80,7 @@ class Herbie():
     def pdf(self, X: torch.Tensor) -> torch.Tensor:
         return torch.exp(self.logpdf_p_herbie(X))        
 
-class FourBranch():
+class FourBranch:
     def __init__(self, negate=False, dtype=torch.double):
         self.negate = negate
         self.dtype = dtype
@@ -97,7 +97,7 @@ class FourBranch():
         return g
 
     def f_eval(self, X: torch.Tensor) -> torch.Tensor:
-        return -self.four_branch_g(X)  # failure if f>0
+        return -self.eval(X)  # failure if f>0
 
     def sampler(self, n: int, generator: Optional[torch.Generator]) -> torch.Tensor:
         return torch.randn(n, 2, dtype=torch.double, device=device)
@@ -109,7 +109,7 @@ class FourBranch():
     def pdf(self, X: torch.Tensor) -> torch.Tensor:
         return torch.exp(self.logpdf_p_fb(X))
         
-class CantileverBeam():
+class CantileverBeam:
     def __init__(self, negate=False, dtype=torch.double):
         self.negate = negate
         self.dtype = dtype
@@ -159,8 +159,8 @@ class CantileverBeam():
 
     def eval(self, X: torch.Tensor) -> torch.Tensor:
         P, L, E, t = X[:, 0], X[:, 1], X[:, 2], X[:, 3]
-        I = self.b_fixed * (t ** 3) / 12.0
-        delta = P * (L ** 3) / (3.0 * E * I)
+        inertia = self.b_fixed * (t ** 3) / 12.0
+        delta = P * (L ** 3) / (3.0 * E * inertia)
         return delta #- self.Dmax  # failure if > 0
 
 class WeldedBeam():
@@ -195,15 +195,15 @@ class WeldedBeam():
         return torch.exp(self.logpdf_p_wb(X))
         
     def welded_beam_components(self, X: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        h, l, t, b = X[:, 0], X[:, 1], X[:, 2], X[:, 3]
+        h, length, t, b = X[:, 0], X[:, 1], X[:, 2], X[:, 3]
 
         # Shear stress components (MathWorks / classical formulas)
-        tp = self.P_wb / math.sqrt(2.0) / (h * l)
-        R = torch.sqrt(0.25 * (l * l + (h + t) ** 2))
-        J = h * l * (l * l / 12.0 + 0.25 * (h + t) ** 2)
-        tpp = (self.P_wb / math.sqrt(2.0)) * (self.L_wb + 0.5 * l) * R / (h * l * J)
+        tp = self.P_wb / math.sqrt(2.0) / (h * length)
+        R = torch.sqrt(0.25 * (length * length + (h + t) ** 2))
+        J = h * length * (length * length / 12.0 + 0.25 * (h + t) ** 2)
+        tpp = (self.P_wb / math.sqrt(2.0)) * (self.L_wb + 0.5 * length) * R / (h * length * J)
 
-        tau = torch.sqrt(tp * tp + tpp * tpp + (l * tp * tpp) / R)  # resultant shear stress
+        tau = torch.sqrt(tp * tp + tpp * tpp + (length * tp * tpp) / R)  # resultant shear stress
         sigma = 5.04e5 / (t * t * b)  # bending stress (psi), matches MW example
         Pc = 64746.022 * (1.0 - 0.028236 * t) * t * (b ** 3)  # buckling load (lb), MW closed form
 

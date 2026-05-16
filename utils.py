@@ -1,13 +1,10 @@
-import math, functools
+import math
+import random
+
+import numpy as np
 import torch
 from torch import tensor
 from torch.distributions import Normal, MultivariateNormal
-from typing import Callable, Dict, Tuple, List
-
-# BoTorch / GPyTorch
-from botorch.models import SingleTaskGP
-from botorch.fit import fit_gpytorch_mll
-from gpytorch.mlls import ExactMarginalLogLikelihood
 
 torch.set_default_dtype(torch.double)
 device = torch.device("cpu")
@@ -16,8 +13,8 @@ STD_NORMAL = Normal(loc=tensor(0.0, dtype=torch.double), scale=tensor(1.0, dtype
 
 def set_seed(seed=1234):
     torch.manual_seed(seed)
-    import random, numpy as np
-    random.seed(seed); np.random.seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
 
 def normal_pdf(x, mu, sigma):
     z = (x - mu)/sigma

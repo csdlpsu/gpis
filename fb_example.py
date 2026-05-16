@@ -1,14 +1,12 @@
 
 import numpy as np
 from surrogates import Surrogates
-from test_functions import Herbie, FourBranch
-from sampling_torch import CustomDistribution, weighted_kde_sample, fit_and_sample_kde, get_kde_weights
-import math
+from test_functions import FourBranch
+from sampling_torch import CustomDistribution, fit_and_sample_kde, get_kde_weights
 from typing import Optional, Callable
 import torch
 from torch import Tensor
-from kde_test import GaussianKDE
-from mis_estimator import MISEstimator, MISEestimator_, ISEestimator_
+from mis_estimator import MISEestimator_, ISEestimator_
 import os
 from mpi4py import MPI
 
@@ -97,11 +95,10 @@ for REP in range(REPS):
             gp = Surrogates(train_X, train_Y, bounds).fit_gp()
             gp.eval()
 
-            weights = get_kde_weights(gp, px, pilot_X, bounds, t, alpha=0.97)
+            weights = get_kde_weights(gp, px, pilot_X, train_X, bounds, t, alpha=0.97)
             list_of_weights.append(weights)
 
             new_X, qx = fit_and_sample_kde(pilot_X, weights, q=5)
-            # new_X = weighted_kde_sample(pilot_X, weights, h, q)
 
             # Clip to domain
             for d in range(D):

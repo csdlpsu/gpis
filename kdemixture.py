@@ -1,8 +1,15 @@
-from utils import *
+import math
+from typing import Callable, Tuple
+
+import torch
+
+from utils import device
+
+
 class KDEMixture:
     """
     Weighted Gaussian-kernel KDE on a fixed pilot set U ~ p, mixture with p:
-      q_n(x) = (1 - eta_n) * \hat q_n(x) + eta_n * p(x)
+      q_n(x) = (1 - eta_n) * KDE_n(x) + eta_n * p(x)
     """
     def __init__(
         self,
@@ -24,7 +31,7 @@ class KDEMixture:
 
     def kde_density(self, X: torch.Tensor, weights: torch.Tensor, chunk_m: int = 4000) -> torch.Tensor:
         """
-        Evaluate \hat q_n(X) = sum_j w_j N(X | U_j, h^2 I).
+        Evaluate KDE_n(X) = sum_j w_j N(X | U_j, h^2 I).
         X: (N,d), weights: (m,), returns (N,)
         """
         X = X.to(device)

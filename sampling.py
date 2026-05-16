@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Callable, Optional, Tuple, Union
+from typing import Callable, Optional, Union
 
 ArrayLike = Union[np.ndarray, float]
 
@@ -247,7 +247,7 @@ class Gaussian(CustomDistribution):
 
 class MixtureOfGaussians(CustomDistribution):
     """
-    Mixture \sum_k w_k N(m_k, Σ_k).
+    Mixture sum_k w_k N(m_k, Sigma_k).
     weights: (K,), means: (K, d), covs: (K, d, d)
     """
     def __init__(self, weights: np.ndarray, means: np.ndarray, covs: np.ndarray):
@@ -275,7 +275,6 @@ class MixtureOfGaussians(CustomDistribution):
         def comp_logpdf(X: np.ndarray) -> np.ndarray:
             # returns (n, K) of component log-densities
             X = _as_2d(X, d)
-            n = X.shape[0]
             # Mahalanobis via broadcasting
             D = X[:, None, :] - means[None, :, :]        # (n,K,d)
             q = np.einsum("nkd,kdj,nkj->nk", D, invs, D) # (n,K)

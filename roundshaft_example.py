@@ -1,14 +1,10 @@
 
 import numpy as np
 from surrogates import Surrogates
-from test_functions import Herbie, FourBranch, CantileverBeam, RoundShaftBT
-from sampling_torch import CustomDistribution, weighted_kde_sample, fit_and_sample_kde, get_kde_weights, fit_and_sample_kde_
-import math
-from typing import Optional, Callable
+from test_functions import RoundShaftBT
+from sampling_torch import CustomDistribution, get_kde_weights, fit_and_sample_kde_
 import torch
-from torch import Tensor
-from kde_test import GaussianKDE
-from mis_estimator import MISEstimator, MISEestimator_, ISEestimator_
+from mis_estimator import MISEestimator_
 import os
 from mpi4py import MPI
 
@@ -28,15 +24,15 @@ t         = 1.
 m         = int(10_000 * D) # number of pilot samples for KDE
 q         = 5               # batch size per iteration
 n_init    = 5
-num_iters = 1000          # number of sequential updates
+num_iters = 200          # number of sequential updates
 # KDE parameters
 alpha     = 0.97         # exponent in q_n(x) ∝ p(x) * π^α
 h         = 0.2         # bandwidth for Gaussian kernel in KDE
-REPS      = 10
+REPS      = 1
 # Construct input distribution p(x)
 
-sampler = func.sampler_p_shaft
-pdf = func.pdf_p_shaft
+sampler = func.sampler
+pdf = func.pdf
 
 px = CustomDistribution(dim=D, pdf=pdf, sampler=sampler)
 
@@ -65,12 +61,10 @@ for REP in range(REPS):
             gp = Surrogates(train_X, train_Y, bounds).fit_gp()
             gp.eval()
 
-            weights = get_kde_weights(gp, px, pilot_X, bounds, t, alpha=alpha)
+            weights = get_kde_weights(gp, px, pilot_X, train_X, bounds, t, alpha=alpha)
             list_of_weights.append(weights)
 
-            # new_X, qx = fit_and_sample_kde(pilot_X, weights, q=5)
             new_X, qx = fit_and_sample_kde_(pilot_X, weights, q=5, train_X=train_X)
-            # new_X = weighted_kde_sample(pilot_X, weights, h, q)
 
             # Clip to domain
             for d in range(D):
@@ -95,9 +89,14 @@ for REP in range(REPS):
             print(f"REP {REP} Iteration {it}: total training points = {train_X.shape[0]} fp {fp_:1.10f}", flush=True)
 
             try:
-                filename = f"results/roundshaft_new/REP_{REP}.npy"
+                filename = f"results/roundshaft_test/REP_{REP}.npy"
+                filename2 = f"results/roundshaft_test/Y_{REP}.npy"
                 np.save(filename, np.array(fp))
+                np.save(filename2, train_Y.numpy())
             except FileNotFoundError:
-                directory_name = "results/roundshaft_new"
-                filename = directory_name + "/" + f"REP_{REP}.npy"
+                directory_name = "results/roundshaft_test"
                 os.mkdir(directory_name)
+                filename = directory_name + "/" + f"REP_{REP}.npy"
+                filename2 = f"results/roundshaft_test/Y_{REP}.npy"
+                np.save(filename, np.array(fp))
+                np.save(filename2, train_Y.numpy())

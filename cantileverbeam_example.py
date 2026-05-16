@@ -1,14 +1,10 @@
 
 import numpy as np
 from surrogates import Surrogates
-from test_functions import Herbie, FourBranch, CantileverBeam
-from sampling_torch import CustomDistribution, weighted_kde_sample, fit_and_sample_kde, get_kde_weights, fit_and_sample_kde_
-import math
-from typing import Optional, Callable
+from test_functions import CantileverBeam
+from sampling_torch import CustomDistribution, fit_and_sample_kde, get_kde_weights
 import torch
-from torch import Tensor
-from kde_test import GaussianKDE
-from mis_estimator import MISEstimator, MISEestimator_, ISEestimator_
+from mis_estimator import MISEestimator_, ISEestimator_
 import os
 
 from mpi4py import MPI
@@ -37,15 +33,8 @@ REPS      = 10
 estimator = "is"
 # Construct input distribution p(x)
 
-# Uniform distribution
-def pdf_unif(x):
-    volume = (bounds[:, 1] - bounds[:, 0]).prod()  # Domain volume
-
-    return 1.0 / volume
-
-
-sampler = func.sampler_p_cantilever
-pdf = func.pdf_p_cantilever
+sampler = func.sampler
+pdf = func.pdf
 
 px = CustomDistribution(dim=D, pdf=pdf, sampler=sampler)
 
@@ -75,12 +64,10 @@ for REP in range(REPS):
             gp = Surrogates(train_X, train_Y, bounds).fit_gp()
             gp.eval()
 
-            weights = get_kde_weights(gp, px, pilot_X, bounds, t, alpha=0.97)
+            weights = get_kde_weights(gp, px, pilot_X, train_X, bounds, t, alpha=0.97)
             list_of_weights.append(weights)
 
             new_X, qx = fit_and_sample_kde(pilot_X, weights, q=q)
-            # new_X, qx = fit_and_sample_kde_(pilot_X, weights, q=5, train_X=train_X)
-            # new_X = weighted_kde_sample(pilot_X, weights, h, q)
 
             # Clip to domain
             for d in range(D):

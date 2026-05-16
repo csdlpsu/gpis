@@ -1,15 +1,12 @@
 
 import numpy as np
 from surrogates import Surrogates
-from test_functions import Herbie, FourBranch
-from sampling_torch import CustomDistribution, weighted_kde_sample, fit_and_sample_kde, get_kde_weights, fit_and_sample_kde_
-import math
+from test_functions import Herbie
+from sampling_torch import CustomDistribution, fit_and_sample_kde, get_kde_weights
 from typing import Optional, Callable
 import torch
 from torch import Tensor
-from kde_test import GaussianKDE
-from mis_estimator import MISEstimator, MISEestimator_, ISEestimator_
-import os
+from mis_estimator import MISEestimator_, ISEestimator_
 from mpi4py import MPI
 
 device = torch.device("cpu")
@@ -28,12 +25,12 @@ t         = 2.1
 m         = int(10_000 * D) # number of pilot samples for KDE
 q         = 5               # batch size per iteration
 n_init    = 5
-num_iters = 80          # number of sequential updates
+num_iters = 200          # number of sequential updates
 # KDE parameters
 alpha     = 0.97        # exponent in q_n(x) ∝ p(x) * π^α
 h         = 0.2         # bandwidth for Gaussian kernel in KDE
-REPS      = 10
-estimator = "is"
+REPS      = 1
+estimator = "mis"
 # Construct input distribution p(x)
 
 # Uniform distribution
@@ -96,12 +93,10 @@ for REP in range(REPS):
             gp = Surrogates(train_X, train_Y, bounds).fit_gp()
             gp.eval()
 
-            weights = get_kde_weights(gp, px, pilot_X, bounds, t, alpha=0.97)
+            weights = get_kde_weights(gp, px, pilot_X, train_X, bounds, t, alpha=0.97)
             list_of_weights.append(weights)
 
             new_X, qx = fit_and_sample_kde(pilot_X, weights, q=5)
-            # new_X, qx = fit_and_sample_kde_(pilot_X, weights, q=5, train_X=train_X)
-            # new_X = weighted_kde_sample(pilot_X, weights, h, q)
 
             # Clip to domain
             for d in range(D):
@@ -126,11 +121,3 @@ for REP in range(REPS):
             fp.append(fp_)
 
             print(f"REP {REP} Iteration {it}: total training points = {train_X.shape[0]} fp {fp_}", flush=True)
-
-            try:
-                filename = f"results/herbie_is/REP_{REP}.npy"
-                np.save(filename, np.array(fp))
-            except FileNotFoundError:
-                directory_name = "results/herbie_is"
-                filename = directory_name + "/" + f"REP_{REP}.npy"
-                os.mkdir(directory_name)

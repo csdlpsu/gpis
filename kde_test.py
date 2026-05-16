@@ -108,12 +108,6 @@ class GaussianKDE:
         s = np.log(np.sum(np.exp(a - m), axis=axis, keepdims=True)) + m
         return np.squeeze(s, axis=axis)
 
-    def _chunked_pairs(self, Y: Array, chunk: int = 1024):
-        """Yield chunks of Y to control memory when evaluating many points."""
-        m = Y.shape[0]
-        for i in range(0, m, chunk):
-            yield Y[i : i + chunk]
-
     # ---- API ----------------------------------------------------------------
     def logpdf(self, Xq: Union[Array, list], chunk_size: int = 2048) -> Array:
         """
@@ -127,7 +121,8 @@ class GaussianKDE:
             raise ValueError(f"Xq must have shape (m, {self.d})")
 
         out = np.empty(Xq.shape[0], dtype=float)
-        for Ys in self._chunked_pairs(Xq, chunk=chunk_size):
+        for start in range(0, Xq.shape[0], chunk_size):
+            Ys = Xq[start : start + chunk_size]
             # Differences shape (m_chunk, n, d)
             D = Ys[:, None, :] - self.X[None, :, :]
             # Whiten: Z = solve(L, D^T)^T  -> (m_chunk, n, d)
@@ -137,11 +132,7 @@ class GaussianKDE:
             logs = self.logw[None, :] + (-0.5 * r2)
             # log pdf = logsumexp(logs, axis=1) - normalization
             lp = self._logsumexp(logs, axis=1) - self._log_norm
-            out_slice = slice(
-                np.searchsorted(Xq[:, 0], Ys[0, 0], side="left", sorter=None) if False else 0,  # no-op; keep simple
-                None,
-            )
-            out[out.shape[0] - len(Xq) + len(Ys) - len(Ys) : out.shape[0] - len(Xq) + len(Ys)] = lp  # filled sequentially
+            out[start : start + Ys.shape[0]] = lp
         return out if out.size > 1 else out[0]
 
     def pdf(self, Xq: Union[Array, list], chunk_size: int = 2048) -> Array:

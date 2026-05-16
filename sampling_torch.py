@@ -1,11 +1,9 @@
 import math
-from typing import Callable, Optional, Tuple, Union
+from typing import Callable, Optional, Union
 import numpy as np
 import torch
 from torch import Tensor
 from kde_test import GaussianKDE, GaussianKDE_
-from botorch.utils.transforms import normalize
-from scipy.stats import gaussian_kde
 TensorLike = Union[Tensor, float]
 
 # =========================
@@ -271,7 +269,7 @@ class Gaussian(CustomDistribution):
 
 class MixtureOfGaussians(CustomDistribution):
     """
-    Mixture \sum_k w_k N(m_k, Σ_k).
+    Mixture sum_k w_k N(m_k, Sigma_k).
     weights: (K,), means: (K, d), covs: (K, d, d)
     """
     def __init__(
@@ -349,8 +347,6 @@ def weighted_kde_sample(pilot_X, weights, h, q, jitter=False):
 
 
 def fit_and_sample_kde(pilot_X, weights, q=1):
-    pilot_X_n = pilot_X.cpu().numpy()
-    weights_n = weights.cpu().numpy()
     kde = GaussianKDE(pilot_X, weights=weights, bandwidth="silverman")
 
     return torch.tensor(kde.sample(q), dtype=torch.double), kde
@@ -359,7 +355,6 @@ def fit_and_sample_kde(pilot_X, weights, q=1):
 def get_kde_weights(gp, px, pilot_X, train_X, bounds, threshold, alpha=1.0, normaliz=True):
     # Compute posterior failure prob π_n on pilot set
     with torch.no_grad():
-        # post = gp.posterior(normalize(pilot_X, bounds))
         post  = gp.posterior( pilot_X.double() )
         mu    = post.mean.squeeze()
         sigma = post.variance.sqrt().squeeze()
@@ -382,12 +377,11 @@ def fit_and_sample_kde_(pilot_X, weights, q=1, *, train_X=None):
     return maximin(samples, train_X, q), kde
 
 def fit_and_sample_kde_scipy(pilot_X, weights, q=1, *, train_X=None):
-    # kde = GaussianKDE(pilot_X, weights=weights, bandwidth="silverman")
     kde = GaussianKDE_(pilot_X, bw_method="silverman", weights=weights)
     samples = torch.tensor(kde.sample(100 * q), dtype=torch.double)
     if train_X is None:
         return samples[:q], kde
-    return samples[:q], kde # maximin(samples, train_X, q), kde
+    return samples[:q], kde
 
 def maximin(samples, train_X, q):
     samples = samples.detach().cpu().double()
