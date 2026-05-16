@@ -10,6 +10,19 @@ multiple importance sampling (MIS), or multifidelity MIS.
 
 ![Herbie GPIS proposal comparison](figures/herbie_final_comparison.png)
 
+## Main Reference
+
+If you use this code, please cite:
+
+```bibtex
+@article{renganathan2026surrogate,
+  title={Surrogate-Guided Adaptive Importance Sampling for Failure Probability Estimation},
+  author={Renganathan, Ashwin and Booth, Annie S},
+  journal={arXiv preprint arXiv:2603.20959},
+  year={2026}
+}
+```
+
 ## What Is In This Repository?
 
 - `experiments.py`: MPI-aware command-line runner for repeated experiments.
